@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, TrendingUp, TrendingDown, DollarSign, Clock, Target, Zap } from 'lucide-react';
+import { BacktestResults } from './BacktestResults';
+import { BacktestingService } from '../services/BacktestingService';
+import { TestingUtils } from '../utils/TestingUtils';
 
 interface Trade {
   id: string;
@@ -19,6 +22,8 @@ export const TradingDashboard: React.FC = () => {
   const [activeTrades, setActiveTrades] = useState<Trade[]>([]);
   const [balance, setBalance] = useState(1000);
   const [todayProfit, setTodayProfit] = useState(0);
+  const [backtestResults, setBacktestResults] = useState<any>(null);
+  const [isBacktesting, setIsBacktesting] = useState(false);
 
   const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
 
@@ -40,6 +45,27 @@ export const TradingDashboard: React.FC = () => {
     setActiveTrades([...activeTrades, newTrade]);
   };
 
+  const runBacktest = async () => {
+    setIsBacktesting(true);
+    try {
+      const historicalData = TestingUtils.generateMockCandleData(1000);
+      const backtestService = new BacktestingService({
+        startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        endDate: new Date(),
+        initialBalance: 1000,
+        feeRate: 0.001,
+        slippageRate: 0.0005,
+        timeframe: '1h'
+      });
+      
+      const results = await backtestService.runComprehensiveBacktest(historicalData);
+      setBacktestResults(results);
+    } catch (error) {
+      console.error('Backtest failed:', error);
+    } finally {
+      setIsBacktesting(false);
+    }
+  };
   return (
     <div className="space-y-6">
       {/* Stats Cards */}
@@ -241,6 +267,13 @@ export const TradingDashboard: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Backtest Results */}
+      <BacktestResults 
+        results={backtestResults}
+        onRunBacktest={runBacktest}
+        isLoading={isBacktesting}
+      />
     </div>
   );
 };

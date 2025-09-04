@@ -3,6 +3,7 @@ import { TradingDashboard } from './components/TradingDashboard';
 import { TradingSettings } from './components/TradingSettings';
 import { TradeHistory } from './components/TradeHistory';
 import { MarketAnalysis } from './components/MarketAnalysis';
+import { StrategyManager } from './components/StrategyManager';
 import { Settings, Activity, TrendingUp, BarChart3 } from 'lucide-react';
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
   const tabs = [
     { id: 'dashboard', label: 'لوحة التداول', icon: TrendingUp },
     { id: 'analysis', label: 'تحليل السوق', icon: BarChart3 },
+    { id: 'strategies', label: 'الاستراتيجيات', icon: Activity },
     { id: 'history', label: 'سجل الصفقات', icon: Activity },
     { id: 'settings', label: 'الإعدادات', icon: Settings },
   ];
@@ -65,6 +67,7 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'dashboard' && <TradingDashboard />}
         {activeTab === 'analysis' && <MarketAnalysis />}
+        {activeTab === 'strategies' && <StrategyManager />}
         {activeTab === 'history' && <TradeHistory />}
         {activeTab === 'settings' && <TradingSettings onConnectionChange={setIsConnected} />}
       </main>
