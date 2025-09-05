@@ -3,11 +3,34 @@ const cors = require('cors');
 const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
+const isDryRun = process.env.DRY_RUN === 'true';
 
+// إعداد الأمان
+app.use(helmet({
+  contentSecurityPolicy: false, // تعطيل CSP للتطوير
+  crossOriginEmbedderPolicy: false
+}));
+
+// إعداد Rate Limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) || 60000, // 1 دقيقة
+  max: parseInt(process.env.RATE_LIMIT_REQUESTS) || 100, // 100 طلب في الدقيقة
+  message: {
+    success: false,
+    error: 'Too many requests, please try again later',
+    retryAfter: 60
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/', limiter);
 // إعداد قاعدة البيانات
 const dbPath = path.join(__dirname, 'logs', 'ellen-bot.db');
 const db = new sqlite3.Database(dbPath);
@@ -56,6 +79,12 @@ db.serialize(() => {
     reason TEXT,
     timestamp TEXT NOT NULL
   )`);
+
+  // إضافة فهارس للأداء
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trade_logs_symbol ON trade_logs(symbol)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trade_logs_timestamp ON trade_logs(timestamp)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_decision_logs_strategy ON decision_logs(strategy)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_risk_logs_timestamp ON risk_logs(timestamp)`);
 });
 
 // Middleware
@@ -68,35 +97,66 @@ const authMiddleware = (req, res, next) => {
   const expectedToken = process.env.FRONTEND_TOKEN || 'ellen-bot-secure-token';
   
   if (!frontendToken || frontendToken !== expectedToken) {
+    console.warn(`[SECURITY] Unauthorized access attempt from ${req.ip}`);
     return res.status(401).json({ 
       success: false, 
-      error: 'Unauthorized access' 
+      error: 'Unauthorized access',
+      timestamp: new Date().toISOString()
     });
   }
   
   next();
 };
 
+// Middleware للتحقق من DRY_RUN للعمليات الحساسة
+const dryRunMiddleware = (req, res, next) => {
+  if (!isDryRun && req.path.includes('/order')) {
+    console.warn(`[SECURITY] Live trading attempt detected: ${req.method} ${req.path}`);
+    
+    // في الإنتاج، يمكن إضافة تأكيد إضافي هنا
+    const confirmation = req.headers['x-live-trading-confirmed'];
+    if (!confirmation) {
+      return res.status(403).json({
+        success: false,
+        error: 'Live trading requires explicit confirmation',
+        isDryRun: false,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+  
+  next();
+};
 // Middleware للتسجيل
 const auditMiddleware = (req, res, next) => {
   const originalSend = res.send;
   
   res.send = function(data) {
     // تسجيل الطلب والاستجابة
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
+    const logData = {
       ip: req.ip,
       userAgent: req.get('User-Agent'),
-      body: req.body,
-      response: typeof data === 'string' ? JSON.parse(data) : data
-    });
+      requestId: req.headers['x-request-id'],
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      responseTime: Date.now() - req.startTime
+    };
+    
+    // تسجيل مفصل للعمليات الحساسة فقط
+    if (req.path.includes('/order') || req.path.includes('/account')) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, logData);
+    }
     
     originalSend.call(this, data);
   };
   
+  req.startTime = Date.now();
   next();
 };
 
 app.use(auditMiddleware);
+app.use(dryRunMiddleware);
 
 // Routes العامة (لا تحتاج مصادقة)
 app.get('/api/health', (req, res) => {
@@ -104,8 +164,42 @@ app.get('/api/health', (req, res) => {
     success: true, 
     message: 'Ellen Bot Backend is running',
     timestamp: new Date().toISOString(),
-    mode: process.env.DRY_RUN === 'true' ? 'DRY_RUN' : 'LIVE'
+    mode: isDryRun ? 'DRY_RUN' : 'LIVE',
+    version: '1.0.0',
+    uptime: process.uptime(),
+    nodeVersion: process.version
   });
+});
+
+// اختبار الاتصال مع Binance (آمن)
+app.get('/api/binance/test', async (req, res) => {
+  try {
+    const fetch = (await import('node-fetch')).default;
+    const startTime = Date.now();
+    
+    const response = await fetch('https://api.binance.com/api/v3/ping');
+    const latency = Date.now() - startTime;
+    
+    if (response.ok) {
+      res.json({
+        success: true,
+        data: {
+          status: 'connected',
+          latency: `${latency}ms`,
+          server: response.headers.get('server')
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      throw new Error(`Binance API error: ${response.status}`);
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // الحصول على بيانات الشموع (عام)
@@ -121,10 +215,19 @@ app.get('/api/klines', async (req, res) => {
     }
 
     // استدعاء Binance API مباشرة للبيانات العامة
-    const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`;
+    const binanceUrl = isDryRun 
+      ? `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`
+      : `${process.env.BINANCE_BASE_URL}/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`;
     
     const fetch = (await import('node-fetch')).default;
-    const response = await fetch(binanceUrl);
+    
+    // استخدام retry logic للطلبات الخارجية
+    const response = await retryFetch(binanceUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Ellen-Bot/1.0'
+      }
+    });
     
     if (!response.ok) {
       throw new Error(`Binance API error: ${response.status}`);
@@ -158,21 +261,31 @@ app.get('/api/klines', async (req, res) => {
 });
 
 // Routes المحمية (تحتاج مصادقة)
-app.use('/api/order', authMiddleware);
-app.use('/api/account', authMiddleware);
-app.use('/api/logs', authMiddleware);
+app.use('/api/order*', authMiddleware);
+app.use('/api/account*', authMiddleware);
+app.use('/api/logs*', authMiddleware);
+app.use('/api/trading*', authMiddleware);
 
 // تنفيذ أمر تداول
 app.post('/api/order', async (req, res) => {
   try {
     const { symbol, side, type, quantity, price } = req.body;
-    const isDryRun = process.env.DRY_RUN === 'true';
     
     // التحقق من صحة البيانات
     if (!symbol || !side || !type || !quantity) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required order parameters'
+        error: 'Missing required order parameters',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // التحقق من صحة القيم
+    if (quantity <= 0 || (price && price <= 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid quantity or price values',
+        timestamp: new Date().toISOString()
       });
     }
 
@@ -227,7 +340,8 @@ app.post('/api/order', async (req, res) => {
     res.json({
       success: true,
       data: result,
-      timestamp
+      timestamp,
+      mode: isDryRun ? 'DRY_RUN' : 'LIVE'
     });
     
   } catch (error) {
@@ -247,6 +361,53 @@ app.post('/api/order', async (req, res) => {
   }
 });
 
+// إلغاء أمر
+app.delete('/api/order/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { symbol } = req.query;
+    
+    if (!orderId || !symbol) {
+      return res.status(400).json({
+        success: false,
+        error: 'Order ID and symbol are required',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    let result;
+    
+    if (isDryRun) {
+      // محاكاة إلغاء الأمر
+      result = {
+        symbol,
+        origClientOrderId: orderId,
+        orderId: parseInt(orderId.split('_')[1]) || Date.now(),
+        status: 'CANCELED'
+      };
+      
+      console.log(`[DRY_RUN] Simulated order cancellation: ${orderId}`);
+    } else {
+      // إلغاء حقيقي عبر Binance API
+      result = await cancelBinanceOrder(symbol, orderId);
+    }
+
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error cancelling order:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // الحصول على معلومات الحساب
 app.get('/api/account/info', async (req, res) => {
   try {
@@ -259,13 +420,16 @@ app.get('/api/account/info', async (req, res) => {
         data: {
           accountType: 'SPOT',
           balances: [
-            { asset: 'USDT', free: '1000.00000000', locked: '0.00000000' },
-            { asset: 'BTC', free: '0.00000000', locked: '0.00000000' }
+            { asset: 'USDT', free: '10000.00000000', locked: '0.00000000' },
+            { asset: 'BTC', free: '0.00000000', locked: '0.00000000' },
+            { asset: 'ETH', free: '0.00000000', locked: '0.00000000' },
+            { asset: 'BNB', free: '0.00000000', locked: '0.00000000' }
           ],
           canTrade: true,
           canWithdraw: false,
           canDeposit: false,
-          updateTime: Date.now()
+          updateTime: Date.now(),
+          accountType: 'PAPER_TRADING'
         },
         timestamp: new Date().toISOString()
       });
@@ -284,6 +448,36 @@ app.get('/api/account/info', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message
+    });
+  }
+});
+
+// الحصول على الأوامر المفتوحة
+app.get('/api/orders/open', async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    
+    let result;
+    
+    if (isDryRun) {
+      // إرجاع أوامر وهمية للاختبار
+      result = [];
+    } else {
+      result = await getBinanceOpenOrders(symbol);
+    }
+
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error getting open orders:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -314,6 +508,33 @@ app.post('/api/logs/decision', async (req, res) => {
   }
 });
 
+// تسجيل صفقة
+app.post('/api/logs/trade', async (req, res) => {
+  try {
+    const logEntry = {
+      id: generateLogId(),
+      ...req.body,
+      timestamp: new Date().toISOString()
+    };
+    
+    await logTrade(logEntry);
+    
+    res.json({
+      success: true,
+      data: { logId: logEntry.id },
+      timestamp: logEntry.timestamp
+    });
+    
+  } catch (error) {
+    console.error('Error logging trade:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // تسجيل فحص المخاطر
 app.post('/api/logs/risk', async (req, res) => {
   try {
@@ -336,6 +557,27 @@ app.post('/api/logs/risk', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message
+    });
+  }
+});
+
+// إحصائيات النظام
+app.get('/api/stats', async (req, res) => {
+  try {
+    const stats = await getSystemStats();
+    
+    res.json({
+      success: true,
+      data: stats,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error getting system stats:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -404,6 +646,47 @@ app.get('/api/logs/:type', async (req, res) => {
   }
 });
 
+// دالة retry للطلبات الخارجية
+async function retryFetch(url, options = {}, maxRetries = 3) {
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const fetch = (await import('node-fetch')).default;
+      const response = await fetch(url, {
+        timeout: options.timeout || 10000,
+        ...options
+      });
+      
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('retry-after');
+        const delay = retryAfter ? parseInt(retryAfter) * 1000 : Math.pow(2, attempt) * 1000;
+        
+        console.warn(`[RETRY] Rate limited. Waiting ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await sleep(delay);
+        continue;
+      }
+      
+      return response;
+      
+    } catch (error) {
+      lastError = error;
+      
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.warn(`[RETRY] Request failed. Retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        await sleep(delay);
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // دوال مساعدة
 function generateOrderId() {
   return `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -411,6 +694,37 @@ function generateOrderId() {
 
 function generateLogId() {
   return `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+async function getSystemStats() {
+  return new Promise((resolve, reject) => {
+    const queries = [
+      'SELECT COUNT(*) as total_trades FROM trade_logs',
+      'SELECT COUNT(*) as total_decisions FROM decision_logs',
+      'SELECT COUNT(*) as total_risk_checks FROM risk_logs',
+      'SELECT COUNT(*) as successful_trades FROM trade_logs WHERE status = "FILLED"',
+      'SELECT AVG(processing_time) as avg_processing_time FROM decision_logs'
+    ];
+    
+    Promise.all(queries.map(query => 
+      new Promise((resolve, reject) => {
+        db.get(query, (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      })
+    )).then(results => {
+      resolve({
+        totalTrades: results[0].total_trades,
+        totalDecisions: results[1].total_decisions,
+        totalRiskChecks: results[2].total_risk_checks,
+        successfulTrades: results[3].successful_trades,
+        avgProcessingTime: results[4].avg_processing_time,
+        mode: isDryRun ? 'DRY_RUN' : 'LIVE',
+        uptime: process.uptime()
+      });
+    }).catch(reject);
+  });
 }
 
 async function logTrade(tradeData) {
@@ -515,22 +829,75 @@ async function logError(errorData) {
   // يمكن إضافة تسجيل الأخطاء في قاعدة البيانات هنا
 }
 
+async function cancelBinanceOrder(symbol, orderId) {
+  const signature = require('./utils/signature');
+  
+  const timestamp = Date.now();
+  const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+  const sig = signature.createSignature(queryString);
+  
+  const fetch = (await import('node-fetch')).default;
+  const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/order?${queryString}&signature=${sig}`, {
+    method: 'DELETE',
+    headers: {
+      'X-MBX-APIKEY': process.env.BINANCE_API_KEY
+    }
+  });
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Binance API error: ${error.msg}`);
+  }
+  
+  return await response.json();
+}
+
+async function getBinanceOpenOrders(symbol) {
+  const signature = require('./utils/signature');
+  
+  const timestamp = Date.now();
+  let queryString = `timestamp=${timestamp}`;
+  if (symbol) {
+    queryString = `symbol=${symbol}&${queryString}`;
+  }
+  
+  const sig = signature.createSignature(queryString);
+  
+  const fetch = (await import('node-fetch')).default;
+  const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/openOrders?${queryString}&signature=${sig}`, {
+    headers: {
+      'X-MBX-APIKEY': process.env.BINANCE_API_KEY
+    }
+  });
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`Binance API error: ${error.msg}`);
+  }
+  
+  return await response.json();
+}
+
 async function executeBinanceOrder(orderData) {
   // تنفيذ أمر حقيقي عبر Binance API
   // هذا يتطلب استخدام مفاتيح API الحقيقية
   const signature = require('./utils/signature');
   
   const timestamp = Date.now();
-  const queryString = `symbol=${orderData.symbol}&side=${orderData.side}&type=${orderData.type}&quantity=${orderData.quantity}&timestamp=${timestamp}`;
+  let queryString = `symbol=${orderData.symbol}&side=${orderData.side}&type=${orderData.type}&quantity=${orderData.quantity}&timestamp=${timestamp}`;
   
   if (orderData.price) {
     queryString += `&price=${orderData.price}`;
   }
   
+  if (orderData.timeInForce) {
+    queryString += `&timeInForce=${orderData.timeInForce}`;
+  }
+  
   const sig = signature.createSignature(queryString);
   
   const fetch = (await import('node-fetch')).default;
-  const response = await fetch('https://api.binance.com/api/v3/order', {
+  const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/order`, {
     method: 'POST',
     headers: {
       'X-MBX-APIKEY': process.env.BINANCE_API_KEY,
@@ -555,7 +922,7 @@ async function getBinanceAccountInfo() {
   const sig = signature.createSignature(queryString);
   
   const fetch = (await import('node-fetch')).default;
-  const response = await fetch(`https://api.binance.com/api/v3/account?${queryString}&signature=${sig}`, {
+  const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/account?${queryString}&signature=${sig}`, {
     headers: {
       'X-MBX-APIKEY': process.env.BINANCE_API_KEY
     }
@@ -578,8 +945,21 @@ if (!fs.existsSync(logsDir)) {
 
 // بدء الخادم
 app.listen(PORT, () => {
-  console.log(`🚀 Ellen Bot Backend running on port ${PORT}`);
-  console.log(`📊 Mode: ${process.env.DRY_RUN === 'true' ? 'DRY_RUN (Safe Testing)' : 'LIVE (Real Trading)'}`);
+  console.log(`\n🚀 Ellen Bot Backend Server Started`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`📊 Mode: ${isDryRun ? '🧪 DRY_RUN (Safe Testing)' : '⚠️  LIVE (Real Trading)'}`);
+  console.log(`🔒 Security: Frontend token authentication enabled`);
+  console.log(`📝 Database: SQLite at ${dbPath}`);
+  console.log(`🔄 Rate Limiting: ${process.env.RATE_LIMIT_REQUESTS || 100} requests/minute`);
+  console.log(`🌐 Binance API: ${process.env.BINANCE_BASE_URL || 'https://api.binance.com/api'}`);
+  
+  if (isDryRun) {
+    console.log(`\n✅ Safe Mode Active - No real trades will be executed`);
+  } else {
+    console.log(`\n⚠️  WARNING: Live Trading Mode - Real money will be used!`);
+  }
+  
+  console.log(`\n📊 Health Check: http://localhost:${PORT}/api/health`);
   console.log(`🔒 Security: Frontend token authentication enabled`);
   console.log(`📝 Logging: SQLite database at ${dbPath}`);
 });

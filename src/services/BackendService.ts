@@ -1,12 +1,15 @@
 /**
- * خدمة الاتصال بالخادم الخلفي الآمن
- * جميع العمليات الحساسة تتم عبر الخادم الخلفي
+ * خدمة الاتصال المحسنة بالخادم الخلفي الآمن
+ * تدعم retry logic وإدارة أخطاء متقدمة
  */
+
+import { RetryService, RetryResult } from './RetryService';
 
 interface BackendConfig {
   baseUrl: string;
   timeout: number;
   retryAttempts: number;
+  frontendToken: string;
 }
 
 interface ApiResponse<T> {
@@ -14,6 +17,7 @@ interface ApiResponse<T> {
   data?: T;
   error?: string;
   timestamp: string;
+  requestId?: string;
 }
 
 interface OrderRequest {
@@ -22,6 +26,8 @@ interface OrderRequest {
   type: 'MARKET' | 'LIMIT';
   quantity: number;
   price?: number;
+  timeInForce?: 'GTC' | 'IOC' | 'FOK';
+  stopPrice?: number;
 }
 
 interface TradeSignal {
@@ -32,18 +38,41 @@ interface TradeSignal {
   confidence: number;
   reason: string;
   timestamp: string;
+  strategy?: string;
+  metadata?: Record<string, any>;
 }
 
 export class BackendService {
   private config: BackendConfig;
   private authToken: string | null = null;
+  private retryFetch: (url: string, options?: RequestInit) => Promise<Response>;
 
   constructor() {
     this.config = {
       baseUrl: import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001/api',
       timeout: 10000,
-      retryAttempts: 3
+      retryAttempts: 3,
+      frontendToken: import.meta.env.VITE_FRONTEND_TOKEN || 'ellen-bot-secure-token'
     };
+    
+    // إنشاء fetch مع retry logic
+    this.retryFetch = RetryService.createRetryFetch({
+      maxAttempts: this.config.retryAttempts,
+      baseDelay: 1000,
+      maxDelay: 30000
+    });
+    
+    this.initializeAuth();
+  }
+
+  /**
+   * تهيئة المصادقة من localStorage
+   */
+  private initializeAuth(): void {
+    const token = localStorage.getItem('ellen_auth_token');
+    if (token) {
+      this.authToken = token;
+    }
   }
 
   /**
@@ -51,14 +80,14 @@ export class BackendService {
    */
   async authenticate(credentials: { username: string; password: string }): Promise<boolean> {
     try {
-      const response = await this.makeRequest<{ token: string }>('/auth/login', {
+      const result = await this.makeSecureRequest<{ token: string }>('/auth/login', {
         method: 'POST',
         body: JSON.stringify(credentials)
       });
 
-      if (response.success && response.data?.token) {
-        this.authToken = response.data.token;
-        localStorage.setItem('auth_token', this.authToken);
+      if (result.success && result.data?.token) {
+        this.authToken = result.data.token;
+        localStorage.setItem('ellen_auth_token', this.authToken);
         return true;
       }
       return false;
@@ -72,18 +101,19 @@ export class BackendService {
    * الحصول على بيانات السوق (آمن - لا يحتاج مفاتيح API)
    */
   async getMarketData(symbol: string): Promise<any> {
-    return this.makeRequest(`/market/ticker/${symbol}`);
+    const result = await this.makeSecureRequest(`/market/ticker/${symbol}`);
+    return result.data;
   }
 
   /**
    * الحصول على بيانات الشموع
    */
   async getKlines(symbol: string, interval: string, limit: number = 100): Promise<any[]> {
-    const response = await this.makeRequest<any[]>(`/market/klines`, {
+    const result = await this.makeSecureRequest<any[]>(`/klines`, {
       method: 'GET',
       params: { symbol, interval, limit: limit.toString() }
     });
-    return response.data || [];
+    return result.data || [];
   }
 
   /**
@@ -94,7 +124,7 @@ export class BackendService {
       throw new Error('Authentication required for trading operations');
     }
 
-    return this.makeRequest('/trading/order', {
+    return this.makeSecureRequest('/order', {
       method: 'POST',
       body: JSON.stringify(orderRequest),
       headers: {
@@ -111,7 +141,7 @@ export class BackendService {
       throw new Error('Authentication required for trading operations');
     }
 
-    return this.makeRequest(`/trading/order/${orderId}`, {
+    return this.makeSecureRequest(`/order/${orderId}`, {
       method: 'DELETE',
       headers: {
         'Authorization': `Bearer ${this.authToken}`
@@ -128,13 +158,13 @@ export class BackendService {
       throw new Error('Authentication required');
     }
 
-    const response = await this.makeRequest<any[]>('/trading/orders/open', {
+    const result = await this.makeSecureRequest<any[]>('/orders/open', {
       headers: {
         'Authorization': `Bearer ${this.authToken}`
       },
       params: symbol ? { symbol } : undefined
     });
-    return response.data || [];
+    return result.data || [];
   }
 
   /**
@@ -145,22 +175,23 @@ export class BackendService {
       throw new Error('Authentication required');
     }
 
-    return this.makeRequest('/account/info', {
+    const result = await this.makeSecureRequest('/account/info', {
       headers: {
         'Authorization': `Bearer ${this.authToken}`
       }
     });
+    return result.data;
   }
 
   /**
    * إرسال إشارة تداول للتحليل
    */
   async submitTradeSignal(signal: Omit<TradeSignal, 'id' | 'timestamp'>): Promise<TradeSignal> {
-    const response = await this.makeRequest<TradeSignal>('/analysis/signal', {
+    const result = await this.makeSecureRequest<TradeSignal>('/analysis/signal', {
       method: 'POST',
       body: JSON.stringify(signal)
     });
-    return response.data!;
+    return result.data!;
   }
 
   /**
@@ -171,13 +202,13 @@ export class BackendService {
       throw new Error('Authentication required');
     }
 
-    const response = await this.makeRequest<any[]>('/trading/history', {
+    const result = await this.makeSecureRequest<any[]>('/trading/history', {
       headers: {
         'Authorization': `Bearer ${this.authToken}`
       },
       params: { limit: limit.toString() }
     });
-    return response.data || [];
+    return result.data || [];
   }
 
   /**
@@ -185,8 +216,8 @@ export class BackendService {
    */
   async testConnection(): Promise<boolean> {
     try {
-      const response = await this.makeRequest('/health');
-      return response.success;
+      const result = await this.makeSecureRequest('/health');
+      return result.success;
     } catch {
       return false;
     }
@@ -200,20 +231,20 @@ export class BackendService {
       throw new Error('Authentication required');
     }
 
-    const response = await this.makeRequest('/settings/trading', {
+    const result = await this.makeSecureRequest('/settings/trading', {
       method: 'PUT',
       body: JSON.stringify(settings),
       headers: {
         'Authorization': `Bearer ${this.authToken}`
       }
     });
-    return response.success;
+    return result.success;
   }
 
   /**
-   * دالة مساعدة لإجراء طلبات HTTP مع retry logic
+   * دالة محسنة لإجراء طلبات HTTP آمنة مع retry logic
    */
-  private async makeRequest<T>(
+  private async makeSecureRequest<T>(
     endpoint: string, 
     options: {
       method?: string;
@@ -231,67 +262,95 @@ export class BackendService {
       url += `?${searchParams.toString()}`;
     }
 
-    // إعداد headers افتراضية
+    // إعداد headers آمنة
     const defaultHeaders = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+      'X-Frontend-Token': this.config.frontendToken,
+      'X-Request-ID': this.generateRequestId(),
       ...headers
     };
 
-    let lastError: Error;
-
-    // تطبيق retry logic مع exponential backoff
-    for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
-      try {
+    // استخدام RetryService للطلبات الآمنة
+    const retryResult: RetryResult<ApiResponse<T>> = await RetryService.executeWithRetry(
+      async () => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
 
-        const response = await fetch(url, {
-          method,
-          headers: defaultHeaders,
-          body,
-          signal: controller.signal
-        });
+        try {
+          const response = await this.retryFetch(url, {
+            method,
+            headers: defaultHeaders,
+            body,
+            signal: controller.signal
+          });
 
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          // التعامل مع rate limiting
-          if (response.status === 429) {
-            const retryAfter = response.headers.get('Retry-After');
-            const delay = retryAfter ? parseInt(retryAfter) * 1000 : Math.pow(2, attempt) * 1000;
-            
-            console.warn(`Rate limited. Retrying after ${delay}ms`);
-            await this.sleep(delay);
-            continue;
-          }
-
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          clearTimeout(timeoutId);
+          
+          const data = await response.json();
+          return data;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
         }
-
-        const data = await response.json();
-        return data;
-
-      } catch (error) {
-        lastError = error as Error;
-        
-        if (attempt < this.config.retryAttempts) {
-          const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
-          console.warn(`Request failed (attempt ${attempt}/${this.config.retryAttempts}). Retrying in ${delay}ms...`);
-          await this.sleep(delay);
-        }
+      },
+      {
+        maxAttempts: this.config.retryAttempts,
+        baseDelay: 1000,
+        maxDelay: 30000
       }
+    );
+
+    if (!retryResult.success) {
+      console.error(`[BACKEND] Request failed after ${retryResult.attempts} attempts:`, retryResult.error);
+      throw retryResult.error;
     }
 
-    // إذا فشلت جميع المحاولات
-    throw new Error(`Request failed after ${this.config.retryAttempts} attempts: ${lastError!.message}`);
+    // تسجيل الطلبات الناجحة مع معلومات الأداء
+    if (retryResult.attempts > 1 || retryResult.wasRateLimited) {
+      console.warn(
+        `[BACKEND] Request succeeded after ${retryResult.attempts} attempts ` +
+        `(${retryResult.totalTime}ms)${retryResult.wasRateLimited ? ' [Rate Limited]' : ''}`
+      );
+    }
+
+    return retryResult.data!;
   }
 
   /**
-   * دالة مساعدة للانتظار
+   * توليد معرف طلب فريد
    */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  private generateRequestId(): string {
+    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * اختبار الاتصال مع معلومات مفصلة
+   */
+  async testConnectionDetailed(): Promise<{
+    connected: boolean;
+    latency: number;
+    serverInfo?: any;
+    error?: string;
+  }> {
+    const startTime = Date.now();
+    
+    try {
+      const result = await this.makeSecureRequest('/health');
+      const latency = Date.now() - startTime;
+      
+      return {
+        connected: result.success,
+        latency,
+        serverInfo: result.data
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        latency: Date.now() - startTime,
+        error: (error as Error).message
+      };
+    }
   }
 
   /**
@@ -299,17 +358,22 @@ export class BackendService {
    */
   logout(): void {
     this.authToken = null;
-    localStorage.removeItem('auth_token');
+    localStorage.removeItem('ellen_auth_token');
   }
 
   /**
-   * استرداد token من localStorage عند بدء التطبيق
+   * الحصول على إحصائيات الاتصال
    */
-  initializeAuth(): void {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      this.authToken = token;
-    }
+  getConnectionStats(): {
+    retryStats: any;
+    isAuthenticated: boolean;
+    backendUrl: string;
+  } {
+    return {
+      retryStats: RetryService.getRetryStats(),
+      isAuthenticated: !!this.authToken,
+      backendUrl: this.config.baseUrl
+    };
   }
 }
 
