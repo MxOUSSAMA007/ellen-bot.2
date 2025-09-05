@@ -4,7 +4,8 @@ import { TradingSettings } from './components/TradingSettings';
 import { TradeHistory } from './components/TradeHistory';
 import { MarketAnalysis } from './components/MarketAnalysis';
 import { StrategyManager } from './components/StrategyManager';
-import { Settings, Activity, TrendingUp, BarChart3 } from 'lucide-react';
+import { LogsViewer } from './components/LogsViewer';
+import { Settings, Activity, TrendingUp, BarChart3, FileText } from 'lucide-react';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -15,6 +16,7 @@ function App() {
     { id: 'analysis', label: 'تحليل السوق', icon: BarChart3 },
     { id: 'strategies', label: 'الاستراتيجيات', icon: Activity },
     { id: 'history', label: 'سجل الصفقات', icon: Activity },
+    { id: 'logs', label: 'السجلات', icon: FileText },
     { id: 'settings', label: 'الإعدادات', icon: Settings },
   ];
 
@@ -69,6 +71,7 @@ function App() {
         {activeTab === 'analysis' && <MarketAnalysis />}
         {activeTab === 'strategies' && <StrategyManager />}
         {activeTab === 'history' && <TradeHistory />}
+        {activeTab === 'logs' && <LogsViewer />}
         {activeTab === 'settings' && <TradingSettings onConnectionChange={setIsConnected} />}
       </main>
     </div>

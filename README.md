@@ -51,6 +51,12 @@ cp .env.example .env
 # تشغيل الخادم المحلي للتطوير
 npm run dev
 
+# تشغيل الخادم الخلفي
+npm run server
+
+# تشغيل الواجهة والخادم معاً
+npm run full-dev
+
 # تشغيل الاختبارات
 npm test
 
@@ -63,8 +69,27 @@ npm run lint
 # بناء المشروع للإنتاج
 npm run build
 
+# تشغيل الخادم الخلفي للإنتاج
+npm run server:start
+
 # معاينة البناء
 npm run preview
+```
+
+## الهيكل الجديد للمشروع
+
+```
+ellen-trading-bot/
+├── src/                          # الواجهة الأمامية (React + TypeScript)
+│   ├── components/               # مكونات React
+│   ├── services/                 # خدمات الاتصال والتسجيل
+│   ├── strategies/               # استراتيجيات التداول
+│   └── utils/                    # أدوات مساعدة
+├── server/                       # الخادم الخلفي (Node.js + Express)
+│   ├── index.js                  # الخادم الرئيسي
+│   ├── utils/                    # أدوات الخادم
+│   └── logs/                     # قاعدة بيانات السجلات
+└── docs/                         # الوثائق
 ```
 
 ## التبديل بين DRY_RUN و Live Trading
@@ -73,23 +98,46 @@ npm run preview
 ```env
 # في ملف .env
 DRY_RUN=true
-BINANCE_BASE_URL=https://testnet.binance.vision/api
+VITE_BACKEND_URL=http://localhost:3001/api
 ```
 
 **مميزات وضع المحاكاة:**
 - ✅ لا يتم تنفيذ صفقات حقيقية
 - ✅ آمن للتطوير والاختبار
-- ✅ يسجل جميع العمليات في السجلات
-- ✅ يستخدم Binance Testnet
+- ✅ يسجل جميع العمليات في قاعدة البيانات
+- ✅ واجهة آمنة بدون مفاتيح API
 
 ### وضع التداول الحقيقي (Live Trading)
 ```env
-# في ملف .env
+# في ملف server/.env
 DRY_RUN=false
-BINANCE_BASE_URL=https://api.binance.com/api
+BINANCE_API_KEY=your_live_api_key
+BINANCE_SECRET_KEY=your_live_secret_key
 ```
 
 **⚠️ تحذير:** وضع التداول الحقيقي يستخدم أموال حقيقية!
+
+## الميزات الأمنية الجديدة
+
+### 1. فصل الواجهة عن الخادم
+- الواجهة الأمامية لا تحتوي على أي مفاتيح API
+- جميع العمليات الحساسة تتم عبر الخادم الخلفي
+- مصادقة آمنة باستخدام Frontend Token
+
+### 2. تسجيل شامل ومراجعة
+- تسجيل جميع القرارات والصفقات في قاعدة بيانات SQLite
+- تتبع كامل لجميع العمليات مع timestamps
+- إمكانية تصدير السجلات للمراجعة
+
+### 3. إدارة مخاطر متقدمة
+- فحص المخاطر قبل كل صفقة
+- حدود يومية للخسائر
+- إيقاف تلقائي عند تجاوز الحدود
+
+### 4. واجهة مراقبة السجلات
+- عرض السجلات المحلية والخادم
+- فلترة وبحث متقدم
+- إحصائيات مفصلة للأداء
 
 ### التبديل من الواجهة
 يمكنك التبديل بين الأوضاع من خلال:
@@ -97,9 +145,116 @@ BINANCE_BASE_URL=https://api.binance.com/api
 2. تفعيل/إلغاء تفعيل "وضع المحاكاة"
 3. حفظ الإعدادات
 
-## إعداد ملف .env
+## إعداد ملفات البيئة
 
-### مثال كامل لملف .env:
+### ملف .env (الواجهة الأمامية)
+```env
+VITE_BACKEND_URL=http://localhost:3001/api
+VITE_FRONTEND_TOKEN=ellen-bot-secure-token
+VITE_DEV_MODE=true
+```
+
+### ملف server/.env (الخادم الخلفي)
+```env
+NODE_ENV=development
+DRY_RUN=true
+BACKEND_PORT=3001
+FRONTEND_TOKEN=ellen-bot-secure-token
+
+# للتداول الحقيقي فقط
+BINANCE_API_KEY=your_api_key
+BINANCE_SECRET_KEY=your_secret_key
+```
+
+## اختبار الاستراتيجيات
+
+يمكنك الآن اختبار جميع الاستراتيجيات الست بأمان:
+
+1. **Trend Following** - تتبع الاتجاهات القوية
+2. **Mean Reversion** - العودة للمتوسط
+3. **Grid + DCA** - الشبكة مع متوسط التكلفة
+4. **Scalping** - الصفقات السريعة
+5. **Market Making** - صناعة السوق
+6. **Hybrid Manager** - الإدارة الذكية للاستراتيجيات
+
+### تشغيل الاختبار:
+```bash
+# تشغيل الواجهة والخادم
+npm run full-dev
+
+# في متصفح آخر، اذهب إلى:
+# http://localhost:5173
+
+# لمراقبة السجلات، اذهب إلى تبويب "السجلات"
+```
+
+## مثال كامل لملف .env القديم (للمرجع):
+
+```env
+# وضع التشغيل
+NODE_ENV=development
+DRY_RUN=true
+
+# إعدادات Binance
+BINANCE_BASE_URL=https://testnet.binance.vision/api
+BINANCE_API_KEY=your_testnet_api_key_here
+BINANCE_SECRET_KEY=your_testnet_secret_key_here
+
+# إعدادات الأمان
+JWT_SECRET=your_super_secure_jwt_secret_minimum_32_characters
+ENCRYPTION_KEY=your_fernet_encryption_key_here
+
+# إعدادات قاعدة البيانات (اختيارية)
+DATABASE_URL=postgresql://user:password@localhost:5432/ellen_bot
+
+# إعدادات Redis (اختيارية)
+REDIS_URL=redis://localhost:6379
+
+# إعدادات الخادم الخلفي
+VITE_BACKEND_URL=http://localhost:3001/api
+
+# إعدادات التداول
+DEFAULT_PROFIT_TARGET=2.0
+DEFAULT_STOP_LOSS=1.0
+MAX_DAILY_LOSS=100
+```
+
+## الأمان والحماية
+
+### ⚠️ تحذيرات مهمة:
+- **لا تشارك Frontend Token مع أي شخص**
+- **لا ترفع ملفات .env إلى Git**
+- **استخدم DRY_RUN دائماً أثناء التطوير**
+- **فعّل المصادقة الثنائية على حساب Binance**
+
+### الميزات الأمنية الجديدة:
+- فصل كامل بين الواجهة والخادم
+- تشفير جميع الاتصالات
+- تسجيل مراجعة شامل
+- حماية من CSRF و XSS
+- Rate limiting للحماية من الهجمات
+
+### نصائح الأمان:
+- ابدأ بمبالغ صغيرة في التداول الحقيقي
+- راقب البوت باستمرار في البداية
+- ضع حدود يومية للخسائر
+- احتفظ بنسخة احتياطية من الإعدادات
+- راجع السجلات بانتظام
+
+## مراقبة الأداء
+
+### لوحة السجلات الجديدة:
+- عرض السجلات المحلية والخادم
+- فلترة حسب العملة والاستراتيجية
+- إحصائيات مفصلة للأداء
+- تصدير السجلات للتحليل
+
+### المقاييس المتاحة:
+- عدد الصفقات المنفذة
+- معدل نجاح الاستراتيجيات
+- أوقات الاستجابة
+- استخدام الذاكرة والمعالج
+- حالة الاتصال بـ Binance
 
 ```env
 # وضع التشغيل
