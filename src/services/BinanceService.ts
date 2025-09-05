@@ -22,20 +22,19 @@ export interface OrderResponse {
 }
 
 export class BinanceService {
-  private config: BinanceConfig;
-  private baseUrl: string;
+  private backendUrl: string;
+  private frontendToken: string;
 
-  constructor(config: BinanceConfig) {
-    this.config = config;
-    this.baseUrl = config.testnet 
-      ? 'https://testnet.binance.vision/api'
-      : 'https://api.binance.com/api';
+  constructor() {
+    this.backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001/api';
+    this.frontendToken = import.meta.env.VITE_FRONTEND_TOKEN || 'ellen-bot-secure-token';
   }
 
   public async testConnection(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/v3/ping`);
-      return response.ok;
+      const response = await fetch(`${this.backendUrl}/health`);
+      const data = await response.json();
+      return data.success;
     } catch (error) {
       console.error('Connection test failed:', error);
       return false;
@@ -44,15 +43,12 @@ export class BinanceService {
 
   public async getAccountInfo(): Promise<any> {
     try {
-      const timestamp = Date.now();
-      const queryString = `timestamp=${timestamp}`;
-      const signature = await this.createSignature(queryString);
-      
       const response = await fetch(
-        `${this.baseUrl}/v3/account?${queryString}&signature=${signature}`,
+        `${this.backendUrl}/account/info`,
         {
           headers: {
-            'X-MBX-APIKEY': this.config.apiKey
+            'X-Frontend-Token': this.frontendToken,
+            'Content-Type': 'application/json'
           }
         }
       );
@@ -61,7 +57,8 @@ export class BinanceService {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      return result.data;
     } catch (error) {
       console.error('Failed to get account info:', error);
       throw error;
@@ -70,7 +67,7 @@ export class BinanceService {
 
   public async getPrice(symbol: string): Promise<number> {
     try {
-      const response = await fetch(`${this.baseUrl}/v3/ticker/price?symbol=${symbol}`);
+      const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -86,7 +83,7 @@ export class BinanceService {
 
   public async get24hrTicker(symbol: string): Promise<any> {
     try {
-      const response = await fetch(`${this.baseUrl}/v3/ticker/24hr?symbol=${symbol}`);
+      const response = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -101,59 +98,42 @@ export class BinanceService {
 
   public async placeOrder(orderRequest: OrderRequest): Promise<OrderResponse> {
     try {
-      const timestamp = Date.now();
-      const params = {
-        symbol: orderRequest.symbol,
-        side: orderRequest.side,
-        type: orderRequest.type,
-        quantity: orderRequest.quantity.toString(),
-        timestamp: timestamp.toString(),
-        ...(orderRequest.price && { price: orderRequest.price.toString() }),
-        ...(orderRequest.timeInForce && { timeInForce: orderRequest.timeInForce })
-      };
-
-      const queryString = new URLSearchParams(params).toString();
-      const signature = await this.createSignature(queryString);
-
       const response = await fetch(
-        `${this.baseUrl}/v3/order`,
+        `${this.backendUrl}/order`,
         {
           method: 'POST',
           headers: {
-            'X-MBX-APIKEY': this.config.apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'X-Frontend-Token': this.frontendToken,
+            'Content-Type': 'application/json'
           },
-          body: `${queryString}&signature=${signature}`
+          body: JSON.stringify(orderRequest)
         }
       );
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(`Order failed: ${errorData.msg || response.statusText}`);
+        throw new Error(`Order failed: ${errorData.error || response.statusText}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      return result.data;
     } catch (error) {
       console.error('Failed to place order:', error);
       throw error;
     }
   }
 
-  public async cancelOrder(symbol: string, orderId: number): Promise<any> {
+  public async cancelOrder(symbol: string, orderId: string): Promise<any> {
     try {
-      const timestamp = Date.now();
-      const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-      const signature = await this.createSignature(queryString);
-
       const response = await fetch(
-        `${this.baseUrl}/v3/order`,
+        `${this.backendUrl}/order/${orderId}`,
         {
           method: 'DELETE',
           headers: {
-            'X-MBX-APIKEY': this.config.apiKey,
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'X-Frontend-Token': this.frontendToken,
+            'Content-Type': 'application/json'
           },
-          body: `${queryString}&signature=${signature}`
+          body: JSON.stringify({ symbol })
         }
       );
 
@@ -161,7 +141,8 @@ export class BinanceService {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      return result.data;
     } catch (error) {
       console.error('Failed to cancel order:', error);
       throw error;
@@ -170,15 +151,13 @@ export class BinanceService {
 
   public async getOpenOrders(symbol?: string): Promise<any[]> {
     try {
-      const timestamp = Date.now();
-      const queryString = `timestamp=${timestamp}${symbol ? `&symbol=${symbol}` : ''}`;
-      const signature = await this.createSignature(queryString);
+      const url = `${this.backendUrl}/orders/open${symbol ? `?symbol=${symbol}` : ''}`;
 
       const response = await fetch(
-        `${this.baseUrl}/v3/openOrders?${queryString}&signature=${signature}`,
+        url,
         {
           headers: {
-            'X-MBX-APIKEY': this.config.apiKey
+            'X-Frontend-Token': this.frontendToken
           }
         }
       );
@@ -187,7 +166,8 @@ export class BinanceService {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      return result.data || [];
     } catch (error) {
       console.error('Failed to get open orders:', error);
       throw error;
@@ -197,49 +177,25 @@ export class BinanceService {
   public async getKlines(symbol: string, interval: string, limit: number = 100): Promise<any[]> {
     try {
       const response = await fetch(
-        `${this.baseUrl}/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+        `${this.backendUrl}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
       );
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      return result.data || [];
     } catch (error) {
       console.error(`Failed to get klines for ${symbol}:`, error);
       throw error;
     }
   }
 
-  private async createSignature(queryString: string): Promise<string> {
-    // في التطبيق الحقيقي، يجب استخدام crypto library لإنشاء HMAC SHA256
-    // هذا مثال مبسط للتوضيح
-    const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(this.config.secretKey),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-
-    const signature = await crypto.subtle.sign(
-      'HMAC',
-      key,
-      encoder.encode(queryString)
-    );
-
-    return Array.from(new Uint8Array(signature))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('');
-  }
-
   // WebSocket للبيانات الفورية
   public createWebSocket(streams: string[]): WebSocket {
     const streamString = streams.join('/');
-    const wsUrl = this.config.testnet
-      ? `wss://testnet.binance.vision/ws/${streamString}`
-      : `wss://stream.binance.com:9443/ws/${streamString}`;
+    const wsUrl = `wss://stream.binance.com:9443/ws/${streamString}`;
 
     return new WebSocket(wsUrl);
   }

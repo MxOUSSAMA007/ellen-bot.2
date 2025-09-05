@@ -4,6 +4,7 @@ import { MeanReversionStrategy, MeanReversionSignal } from './MeanReversion';
 import { GridDCAStrategy, GridDCASignal } from './GridDCA';
 import { ScalpingStrategy, ScalpingSignal } from './Scalping';
 import { MarketMakingStrategy, MarketMakingSignal } from './MarketMaking';
+import { secureLoggingService } from '../services/SecureLoggingService';
 
 export interface MarketCondition {
   volatility: number;
@@ -75,11 +76,24 @@ export class HybridTradingManager {
     orderBook?: { bid: number; ask: number; bidSize: number; askSize: number },
     symbol: string = 'BTCUSDT'
   ): HybridSignal {
+    const analysisStart = performance.now();
+    
     // تحديث إدارة المخاطر
     this.updateRiskManagement();
 
     // فحص شروط الإيقاف
     if (this.riskManagement.shouldStop) {
+      // تسجيل إيقاف النظام
+      secureLoggingService.logRiskCheck({
+        action: 'RISK_CHECK',
+        currentDrawdown: this.riskManagement.currentDrawdown,
+        dailyLoss: this.riskManagement.dailyLoss,
+        positionSize: this.riskManagement.positionSize,
+        riskLevel: 'HIGH',
+        approved: false,
+        reason: 'تم تجاوز حدود المخاطرة - إيقاف النظام'
+      });
+      
       return this.createStopSignal('تم تجاوز حدود المخاطرة');
     }
 
@@ -122,7 +136,38 @@ export class HybridTradingManager {
 
     // تطبيق إدارة المخاطر على الإشارة
     const adjustedSignal = this.applyRiskManagement(signal, marketCondition);
+    
+    const analysisTime = performance.now() - analysisStart;
 
+    // تسجيل القرار
+    secureLoggingService.logDecision({
+      symbol,
+      strategy: this.currentStrategy,
+      marketCondition: marketCondition.regime,
+      indicators: {
+        volatility: marketCondition.volatility,
+        trendStrength: marketCondition.trendStrength,
+        liquidity: marketCondition.liquidity,
+        confidence: marketCondition.confidence
+      },
+      decision: adjustedSignal.action,
+      confidence: adjustedSignal.confidence,
+      reasons: adjustedSignal.reasons,
+      processingTime: analysisTime
+    });
+    
+    // تسجيل فحص المخاطر إذا كان هناك تعديل
+    if (adjustedSignal.action !== signal.action || adjustedSignal.confidence !== signal.confidence) {
+      secureLoggingService.logRiskCheck({
+        action: 'RISK_CHECK',
+        currentDrawdown: this.riskManagement.currentDrawdown,
+        dailyLoss: this.riskManagement.dailyLoss,
+        positionSize: this.riskManagement.positionSize,
+        riskLevel: this.calculateRiskLevel(adjustedSignal.confidence, marketCondition),
+        approved: adjustedSignal.action !== 'HOLD',
+        reason: 'تم تطبيق إدارة المخاطر على الإشارة'
+      });
+    }
     return {
       strategy: this.currentStrategy as any,
       action: adjustedSignal.action,

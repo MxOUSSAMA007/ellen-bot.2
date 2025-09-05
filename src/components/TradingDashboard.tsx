@@ -3,6 +3,7 @@ import { Play, Pause, TrendingUp, TrendingDown, DollarSign, Clock, Target, Zap }
 import { BacktestResults } from './BacktestResults';
 import { BacktestingService } from '../services/BacktestingService';
 import { TestingUtils } from '../utils/TestingUtils';
+import { secureLoggingService } from '../services/SecureLoggingService';
 
 interface Trade {
   id: string;
@@ -32,17 +33,34 @@ export const TradingDashboard: React.FC = () => {
   };
 
   const handleManualTrade = (side: 'BUY' | 'SELL') => {
+    const currentPrice = Math.random() * 50000 + 30000;
+    const quantity = 0.001;
+    
     const newTrade: Trade = {
       id: Date.now().toString(),
       symbol: selectedSymbol,
       side,
-      quantity: 0.001,
-      price: Math.random() * 50000 + 30000,
+      quantity,
+      price: currentPrice,
       profit: 0,
       status: 'OPEN',
       timestamp: new Date()
     };
+    
     setActiveTrades([...activeTrades, newTrade]);
+    
+    // تسجيل الصفقة اليدوية
+    secureLoggingService.logTrade({
+      symbol: selectedSymbol,
+      action: side,
+      price: currentPrice,
+      size: quantity,
+      reason: 'صفقة يدوية من لوحة التداول',
+      confidence: 100,
+      strategy: 'MANUAL',
+      isDryRun: true,
+      status: 'SIMULATED'
+    });
   };
 
   const runBacktest = async () => {
