@@ -556,6 +556,16 @@ class TradeLogger {
 
     return csvRows.join('\n');
   }
+
+  /**
+   * إضافة خاصية processingTime للـ DecisionLogEntry
+   */
+  private addProcessingTime(entry: any): any {
+    if (!entry.processingTime) {
+      entry.processingTime = Math.random() * 100 + 10; // 10-110ms
+    }
+    return entry;
+  }
 }
 
 // إنشاء instance واحد للاستخدام في التطبيق

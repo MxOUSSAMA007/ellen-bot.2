@@ -20,7 +20,7 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
   onRunBacktest, 
   isLoading = false 
 }) => {
-  const [selectedStrategy, setSelectedStrategy] = useState('overall');
+  const [selectedStrategy, setSelectedStrategy] = useState('HYBRID');
 
   if (!results) {
     return (
@@ -44,9 +44,7 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
     );
   }
 
-  const currentResult = selectedStrategy === 'overall' 
-    ? results.overall 
-    : results.strategies[selectedStrategy];
+  const currentResult = results;
 
   const getPerformanceColor = (value: number, type: 'return' | 'winRate' | 'drawdown') => {
     switch (type) {
@@ -85,7 +83,7 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
               onChange={(e) => setSelectedStrategy(e.target.value)}
               className="bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
-              <option value="overall">النظام الهجين</option>
+              <option value="HYBRID">النظام الهجين</option>
               <option value="TREND_FOLLOWING">تتبع الاتجاه</option>
               <option value="MEAN_REVERSION">العودة للمتوسط</option>
               <option value="GRID_DCA">الشبكة + DCA</option>
@@ -240,12 +238,12 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
           </div>
 
           {/* Strategy Distribution (for hybrid) */}
-          {selectedStrategy === 'overall' && results.overall.strategyDistribution && (
+          {selectedStrategy === 'HYBRID' && results.strategyDistribution && (
             <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
               <h3 className="text-lg font-semibold mb-4">توزيع استخدام الاستراتيجيات</h3>
               
               <div className="space-y-4">
-                {Object.entries(results.overall.strategyDistribution).map(([strategy, percentage]) => {
+                {Object.entries(results.strategyDistribution).map(([strategy, percentage]) => {
                   const strategyInfo = {
                     'TREND_FOLLOWING': { name: 'تتبع الاتجاه', color: 'emerald' },
                     'MEAN_REVERSION': { name: 'العودة للمتوسط', color: 'blue' },
@@ -345,7 +343,7 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
           </div>
 
           {/* Recent Trades Sample */}
-          {currentResult.trades && currentResult.trades.length > 0 && (
+          {results.trades && results.trades.length > 0 && (
             <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold">عينة من الصفقات</h3>
@@ -369,7 +367,7 @@ export const BacktestResults: React.FC<BacktestResultsProps> = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {currentResult.trades.slice(0, 10).map((trade: any, index: number) => (
+                    {results.trades.slice(0, 10).map((trade: any, index: number) => (
                       <tr key={trade.id} className={`border-b border-slate-700/50 ${index % 2 === 0 ? 'bg-slate-800/20' : ''}`}>
                         <td className="py-3 px-4">
                           <span className={`px-2 py-1 rounded text-xs font-medium ${

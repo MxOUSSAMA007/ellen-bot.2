@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { HybridTradingManager, HybridSignal, MarketCondition } from '../strategies/HybridManager';
 import { TestingUtils } from '../utils/TestingUtils';
+import { BacktestResults } from './BacktestResults';
 
 export const StrategyManager: React.FC = () => {
   const [hybridManager] = useState(() => new HybridTradingManager());
@@ -371,79 +372,11 @@ export const StrategyManager: React.FC = () => {
       </div>
 
       {/* Backtest Results */}
-      {backtestResults && (
-        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
-          <h3 className="text-lg font-semibold mb-4">نتائج الاختبار التاريخي</h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">إجمالي الصفقات</p>
-              <p className="text-white text-xl font-bold">{backtestResults.totalTrades}</p>
-            </div>
-            
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">معدل النجاح</p>
-              <p className="text-emerald-400 text-xl font-bold">{backtestResults.winRate.toFixed(1)}%</p>
-            </div>
-            
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">إجمالي العائد</p>
-              <p className={`text-xl font-bold ${backtestResults.totalReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {backtestResults.totalReturn.toFixed(2)}%
-              </p>
-            </div>
-            
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">أقصى انخفاض</p>
-              <p className="text-red-400 text-xl font-bold">{backtestResults.maxDrawdown.toFixed(2)}%</p>
-            </div>
-            
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">نسبة شارب</p>
-              <p className="text-blue-400 text-xl font-bold">{backtestResults.sharpeRatio.toFixed(2)}</p>
-            </div>
-            
-            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
-              <p className="text-slate-400 text-sm">حالة القبول</p>
-              <div className="flex items-center justify-center space-x-1">
-                {backtestResults.maxDrawdown < 10 && backtestResults.winRate > 60 ? (
-                  <>
-                    <CheckCircle className="w-5 h-5 text-emerald-400" />
-                    <span className="text-emerald-400 text-sm font-medium">مقبول</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle className="w-5 h-5 text-red-400" />
-                    <span className="text-red-400 text-sm font-medium">مرفوض</span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Strategy Distribution */}
-          <div>
-            <h4 className="text-md font-medium text-slate-300 mb-3">توزيع استخدام الاستراتيجيات</h4>
-            <div className="space-y-3">
-              {strategies.map((strategy) => {
-                const usage = backtestResults.strategyDistribution[strategy.id] || 0;
-                return (
-                  <div key={strategy.id} className="flex items-center space-x-3">
-                    <div className="w-24 text-slate-400 text-sm">{strategy.name}</div>
-                    <div className="flex-1 bg-slate-700 rounded-full h-2">
-                      <div 
-                        className={`h-2 rounded-full bg-${strategy.color}-400`}
-                        style={{ width: `${usage}%` }}
-                      ></div>
-                    </div>
-                    <div className="w-12 text-white text-sm text-right">{usage.toFixed(1)}%</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      <BacktestResults 
+        results={backtestResults}
+        onRunBacktest={runBacktest}
+        isLoading={false}
+      />
 
       {/* Live Signals Log */}
       {isRunning && currentSignal && (

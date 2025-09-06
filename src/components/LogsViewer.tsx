@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Download, Filter, RefreshCw, Database, HardDrive } from 'lucide-react';
-import { secureLoggingService } from '../services/SecureLoggingService';
+import { PaperTradingService } from '../services/PaperTradingService';
 
 export const LogsViewer: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'local' | 'server'>('local');
-  const [logType, setLogType] = useState<'trades' | 'decisions' | 'risk'>('trades');
+  const [paperTradingService] = useState(() => PaperTradingService.getInstance());
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [statistics, setStatistics] = useState<any>(null);
@@ -22,21 +22,8 @@ export const LogsViewer: React.FC = () => {
   const loadLogs = async () => {
     setLoading(true);
     try {
-      if (activeTab === 'local') {
-        const localLogs = secureLoggingService.getLocalLogs({
-          symbol: filters.symbol || undefined,
-          strategy: filters.strategy || undefined,
-          limit: filters.limit
-        });
-        setLogs(localLogs);
-      } else {
-        const serverLogs = await secureLoggingService.getLogsFromServer(logType, {
-          symbol: filters.symbol || undefined,
-          strategy: filters.strategy || undefined,
-          limit: filters.limit
-        });
-        setLogs(serverLogs);
-      }
+      const orderHistory = paperTradingService.getOrderHistory(filters.limit);
+      setLogs(orderHistory);
     } catch (error) {
       console.error('Error loading logs:', error);
       setLogs([]);
@@ -47,15 +34,23 @@ export const LogsViewer: React.FC = () => {
 
   const loadStatistics = async () => {
     try {
-      const stats = await secureLoggingService.getStatistics();
-      setStatistics(stats);
+      const stats = paperTradingService.getDetailedStats();
+      setStatistics({
+        local: {
+          totalLogs: stats.account.totalTrades,
+          tradeSignals: stats.account.totalTrades,
+          riskChecks: 0,
+          lastActivity: new Date().toISOString()
+        }
+      });
     } catch (error) {
       console.error('Error loading statistics:', error);
     }
   };
 
   const handleExport = () => {
-    const data = secureLoggingService.exportLogs('json');
+    const orderHistory = paperTradingService.getOrderHistory(1000);
+    const data = JSON.stringify(orderHistory, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -165,18 +160,6 @@ export const LogsViewer: React.FC = () => {
           </div>
 
           {/* Log Type Selector */}
-          {activeTab === 'server' && (
-            <select
-              value={logType}
-              onChange={(e) => setLogType(e.target.value as any)}
-              className="bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="trades">الصفقات</option>
-              <option value="decisions">القرارات</option>
-              <option value="risk">المخاطر</option>
-            </select>
-          )}
-
           {/* Filters */}
           <div className="flex items-center space-x-4">
             <input
@@ -261,34 +244,34 @@ export const LogsViewer: React.FC = () => {
                 </tr>
               ) : (
                 logs.map((log, index) => (
-                  <tr key={log.id} className={`border-b border-slate-700/50 ${index % 2 === 0 ? 'bg-slate-800/20' : ''}`}>
+                  <tr key={log.id || index} className={`border-b border-slate-700/50 ${index % 2 === 0 ? 'bg-slate-800/20' : ''}`}>
                     <td className="py-3 px-6 text-slate-300 text-sm">
                       {formatTimestamp(log.timestamp)}
                     </td>
-                    <td className="py-3 px-6 text-white font-medium">{log.symbol}</td>
+                    <td className="py-3 px-6 text-white font-medium">{log.symbol || 'N/A'}</td>
                     <td className="py-3 px-6">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${getActionColor(log.action)}`}>
-                        {log.action}
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${getActionColor(log.side || log.action)}`}>
+                        {log.side || log.action || 'UNKNOWN'}
                       </span>
                     </td>
                     <td className="py-3 px-6 text-white">
-                      {log.price ? `$${log.price.toFixed(2)}` : '-'}
+                      {log.executedPrice ? `$${log.executedPrice.toFixed(2)}` : '-'}
                     </td>
                     <td className="py-3 px-6 text-white">
-                      {log.size ? log.size.toFixed(6) : '-'}
+                      {log.executedQuantity ? log.executedQuantity.toFixed(6) : '-'}
                     </td>
                     <td className="py-3 px-6 text-white">
-                      {log.confidence ? `${log.confidence.toFixed(0)}%` : '-'}
+                      {log.status === 'FILLED' ? '100%' : '0%'}
                     </td>
                     <td className="py-3 px-6">
-                      {log.strategy && (
+                      {log.type && (
                         <span className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
-                          {log.strategy}
+                          {log.type}
                         </span>
                       )}
                     </td>
                     <td className="py-3 px-6 text-slate-400 text-xs max-w-xs truncate">
-                      {log.reason}
+                      {log.reason || log.status}
                     </td>
                   </tr>
                 ))

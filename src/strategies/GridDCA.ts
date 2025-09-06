@@ -32,7 +32,7 @@ export class GridDCAStrategy {
   private referencePrice: number = 0;
   private gridLevels: GridLevel[] = [];
   private totalExposure: number = 0;
-  private accountBalance: number = 1000; // محاكاة الرصيد
+  private accountBalance: number = 10000; // محاكاة الرصيد
 
   constructor(config: GridDCAConfig = {
     gridRange: 10,
@@ -196,7 +196,7 @@ export class GridDCAStrategy {
   private calculateBaseQuantity(): number {
     // حساب الكمية الأساسية (1% من الرصيد مقسوم على السعر)
     const baseAmount = this.accountBalance * 0.01;
-    return baseAmount / this.referencePrice;
+    return this.referencePrice > 0 ? baseAmount / this.referencePrice : 0;
   }
 
   private createHoldSignal(reason: string): GridDCASignal {

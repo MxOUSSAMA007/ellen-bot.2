@@ -378,10 +378,14 @@ class LoggingService {
   private async sendToBackend(logEntry: LogEntry): Promise<void> {
     try {
       // إرسال إلى الخادم الخلفي للحفظ الدائم
-      await fetch(`${import.meta.env.VITE_BACKEND_URL}/logs`, {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001/api';
+      const frontendToken = import.meta.env.VITE_FRONTEND_TOKEN || 'ellen-bot-secure-token';
+      
+      await fetch(`${backendUrl}/logs/trade`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'X-Frontend-Token': frontendToken
         },
         body: JSON.stringify(logEntry)
       });

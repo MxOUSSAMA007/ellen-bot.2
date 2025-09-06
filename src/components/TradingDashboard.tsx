@@ -3,7 +3,7 @@ import { Play, Pause, TrendingUp, TrendingDown, DollarSign, Clock, Target, Zap }
 import { BacktestResults } from './BacktestResults';
 import { BacktestingService } from '../services/BacktestingService';
 import { TestingUtils } from '../utils/TestingUtils';
-import { secureLoggingService } from '../services/SecureLoggingService';
+import { PaperTradingService } from '../services/PaperTradingService';
 
 interface Trade {
   id: string;
@@ -21,46 +21,61 @@ export const TradingDashboard: React.FC = () => {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [profitTarget, setProfitTarget] = useState(2);
   const [activeTrades, setActiveTrades] = useState<Trade[]>([]);
-  const [balance, setBalance] = useState(1000);
+  const [paperTradingService] = useState(() => PaperTradingService.getInstance());
+  const [accountInfo, setAccountInfo] = useState(paperTradingService.getAccountInfo());
   const [todayProfit, setTodayProfit] = useState(0);
   const [backtestResults, setBacktestResults] = useState<any>(null);
   const [isBacktesting, setIsBacktesting] = useState(false);
 
   const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAccountInfo(paperTradingService.getAccountInfo());
+    }, 2000);
+    
+    return () => clearInterval(interval);
+  }, [paperTradingService]);
+
   const handleAutoTrade = () => {
     setIsAutoTrading(!isAutoTrading);
   };
 
-  const handleManualTrade = (side: 'BUY' | 'SELL') => {
-    const currentPrice = Math.random() * 50000 + 30000;
-    const quantity = 0.001;
-    
-    const newTrade: Trade = {
-      id: Date.now().toString(),
-      symbol: selectedSymbol,
-      side,
-      quantity,
-      price: currentPrice,
-      profit: 0,
-      status: 'OPEN',
-      timestamp: new Date()
-    };
-    
-    setActiveTrades([...activeTrades, newTrade]);
-    
-    // تسجيل الصفقة اليدوية
-    secureLoggingService.logTrade({
-      symbol: selectedSymbol,
-      action: side,
-      price: currentPrice,
-      size: quantity,
-      reason: 'صفقة يدوية من لوحة التداول',
-      confidence: 100,
-      strategy: 'MANUAL',
-      isDryRun: true,
-      status: 'SIMULATED'
-    });
+  const handleManualTrade = async (side: 'BUY' | 'SELL') => {
+    try {
+      const marketPrices = paperTradingService.getMarketPrices();
+      const marketData = marketPrices[selectedSymbol];
+      
+      if (!marketData) {
+        console.error('Market data not available for', selectedSymbol);
+        return;
+      }
+
+      const quantity = 0.001;
+      const order = await paperTradingService.placeOrder({
+        symbol: selectedSymbol,
+        side,
+        type: 'MARKET',
+        quantity
+      });
+
+      if (order.status === 'FILLED') {
+        const newTrade: Trade = {
+          id: order.id,
+          symbol: selectedSymbol,
+          side,
+          quantity: order.executedQuantity || quantity,
+          price: order.executedPrice || marketData.currentPrice,
+          profit: 0,
+          status: 'OPEN',
+          timestamp: new Date(order.timestamp)
+        };
+        
+        setActiveTrades([...activeTrades, newTrade]);
+      }
+    } catch (error) {
+      console.error('Failed to place manual trade:', error);
+    }
   };
 
   const runBacktest = async () => {
@@ -92,7 +107,7 @@ export const TradingDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm">الرصيد الحالي</p>
-              <p className="text-2xl font-bold text-white">${balance.toFixed(2)}</p>
+              <p className="text-2xl font-bold text-white">${accountInfo.totalValue.toFixed(2)}</p>
             </div>
             <DollarSign className="w-8 h-8 text-emerald-400" />
           </div>
@@ -102,8 +117,8 @@ export const TradingDashboard: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-slate-400 text-sm">ربح اليوم</p>
-              <p className={`text-2xl font-bold ${todayProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                ${todayProfit.toFixed(2)}
+              <p className={`text-2xl font-bold ${accountInfo.dailyPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                ${accountInfo.dailyPnL.toFixed(2)}
               </p>
             </div>
             <TrendingUp className="w-8 h-8 text-emerald-400" />
@@ -218,7 +233,9 @@ export const TradingDashboard: React.FC = () => {
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-slate-400">السعر الحالي:</span>
-                  <span className="text-white">$43,250.00</span>
+                  <span className="text-white">
+                    ${paperTradingService.getMarketPrices()[selectedSymbol]?.currentPrice.toFixed(2) || 'N/A'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">التغيير 24س:</span>
@@ -226,7 +243,9 @@ export const TradingDashboard: React.FC = () => {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">الحجم:</span>
-                  <span className="text-white">1.2B</span>
+                  <span className="text-white">
+                    {((paperTradingService.getMarketPrices()[selectedSymbol]?.volume24h || 0) / 1000000000).toFixed(1)}B
+                  </span>
                 </div>
               </div>
             </div>

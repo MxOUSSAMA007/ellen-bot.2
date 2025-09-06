@@ -27,6 +27,7 @@ export class ScalpingStrategy {
   private config: ScalpingConfig;
   private lastSignalTime: number = 0;
   private minSignalInterval: number = 5000; // 5 ثواني بين الإشارات
+  private accountBalance: number = 10000; // محاكاة الرصيد
 
   constructor(config: ScalpingConfig = {
     profitTarget: 0.3,

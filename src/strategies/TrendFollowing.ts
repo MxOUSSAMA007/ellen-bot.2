@@ -21,6 +21,7 @@ export interface TrendSignal {
 
 export class TrendFollowingStrategy {
   private config: TrendFollowingConfig;
+  private accountBalance: number = 10000;
 
   constructor(config: TrendFollowingConfig = {
     emaShort: 50,

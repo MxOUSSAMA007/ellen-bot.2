@@ -34,7 +34,7 @@ export class MarketMakingStrategy {
   private config: MarketMakingConfig;
   private inventory: Map<string, InventoryPosition> = new Map();
   private lastRebalance: number = 0;
-  private accountBalance: number = 1000;
+  private accountBalance: number = 10000;
 
   constructor(config: MarketMakingConfig = {
     targetSpread: 0.1,

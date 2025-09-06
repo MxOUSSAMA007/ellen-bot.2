@@ -60,8 +60,8 @@ export class HybridTradingManager {
     shouldStop: false
   };
 
-  private accountBalance: number = 1000;
-  private peak: number = 1000;
+  private accountBalance: number = 10000;
+  private peak: number = 10000;
 
   constructor() {
     this.trendStrategy = new TrendFollowingStrategy();
@@ -461,8 +461,8 @@ export class HybridTradingManager {
     };
 
     // إعادة تعيين للاختبار
-    this.accountBalance = 1000;
-    this.peak = 1000;
+    this.accountBalance = 10000;
+    this.peak = 10000;
     this.riskManagement.dailyLoss = 0;
     this.riskManagement.currentDrawdown = 0;
 

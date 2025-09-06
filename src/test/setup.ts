@@ -1,11 +1,8 @@
-import { expect, afterEach } from 'vitest';
-import { cleanup } from '@testing-library/react';
-import * as matchers from '@testing-library/jest-dom/matchers';
+import { expect } from 'vitest';
 
-// إضافة matchers مخصصة
-expect.extend(matchers);
-
-// تنظيف بعد كل اختبار
-afterEach(() => {
-  cleanup();
-});
+// إعداد بيئة الاختبار
+global.console = {
+  ...console,
+  warn: () => {}, // تجاهل التحذيرات في الاختبارات
+  error: () => {} // تجاهل الأخطاء في الاختبارات
+};

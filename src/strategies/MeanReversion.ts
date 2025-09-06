@@ -23,6 +23,7 @@ export interface MeanReversionSignal {
 
 export class MeanReversionStrategy {
   private config: MeanReversionConfig;
+  private accountBalance: number = 10000;
 
   constructor(config: MeanReversionConfig = {
     rsiPeriod: 14,

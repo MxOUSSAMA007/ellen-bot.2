@@ -173,12 +173,25 @@ export class TradingEngine {
 
   private async sendOrderToBinance(position: any): Promise<void> {
     // محاكاة إرسال أمر لـ Binance
-    // في التطبيق الحقيقي، هنا سيتم استخدام Binance API
+    const isDryRun = import.meta.env.VITE_DRY_RUN === 'true';
+    
+    if (isDryRun) {
+      console.log('[DRY_RUN] Simulated order sent to Binance:', position);
+    } else {
+      // في التطبيق الحقيقي، هنا سيتم استخدام Binance API
+    }
     console.log('Order sent to Binance:', position);
   }
 
   private async sendCloseOrderToBinance(position: any, reason: string): Promise<void> {
     // محاكاة إرسال أمر إغلاق لـ Binance
+    const isDryRun = import.meta.env.VITE_DRY_RUN === 'true';
+    
+    if (isDryRun) {
+      console.log('[DRY_RUN] Simulated close order sent to Binance:', { position, reason });
+    } else {
+      // في التطبيق الحقيقي، هنا سيتم استخدام Binance API
+    }
     console.log('Close order sent to Binance:', { position, reason });
   }
 
