@@ -242,6 +242,78 @@ export class BackendService {
   }
 
   /**
+   * تعيين مفاتيح Binance API بشكل آمن
+   */
+  async setBinanceApiKeys(keys: {
+    apiKey: string;
+    secretKey: string;
+    testnet?: boolean;
+  }): Promise<{ success: boolean; error?: string; validated?: boolean }> {
+    try {
+      const result = await this.makeSecureRequest<{ validated: boolean }>('/settings/binance-api-keys', {
+        method: 'POST',
+        body: JSON.stringify(keys)
+      });
+      
+      return {
+        success: result.success,
+        validated: result.data?.validated || false,
+        error: result.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message
+      };
+    }
+  }
+
+  /**
+   * مسح مفاتيح Binance API من الخادم
+   */
+  async clearBinanceApiKeys(): Promise<boolean> {
+    try {
+      const result = await this.makeSecureRequest('/settings/binance-api-keys', {
+        method: 'DELETE'
+      });
+      return result.success;
+    } catch (error) {
+      console.error('Failed to clear API keys:', error);
+      return false;
+    }
+  }
+
+  /**
+   * التحقق من حالة اتصال Binance
+   */
+  async checkBinanceConnection(): Promise<{
+    connected: boolean;
+    testnet: boolean;
+    permissions?: string[];
+    error?: string;
+  }> {
+    try {
+      const result = await this.makeSecureRequest<{
+        connected: boolean;
+        testnet: boolean;
+        permissions: string[];
+      }>('/binance/connection-status');
+      
+      return {
+        connected: result.success && result.data?.connected || false,
+        testnet: result.data?.testnet || false,
+        permissions: result.data?.permissions || [],
+        error: result.error
+      };
+    } catch (error) {
+      return {
+        connected: false,
+        testnet: false,
+        error: (error as Error).message
+      };
+    }
+  }
+  /**
    * دالة محسنة لإجراء طلبات HTTP آمنة مع retry logic
    */
   private async makeSecureRequest<T>(

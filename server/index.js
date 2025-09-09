@@ -5,11 +5,25 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
 const isDryRun = process.env.DRY_RUN === 'true';
+
+// إعدادات التشفير
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
+const ALGORITHM = 'aes-256-gcm';
+
+// تخزين مؤقت للمفاتيح المشفرة (في الإنتاج، استخدم Redis أو Secrets Manager)
+let encryptedApiKeys = {
+  apiKey: null,
+  secretKey: null,
+  testnet: true,
+  validated: false,
+  timestamp: null
+};
 
 // إعداد الأمان
 app.use(helmet({
@@ -266,6 +280,138 @@ app.use('/api/account*', authMiddleware);
 app.use('/api/logs*', authMiddleware);
 app.use('/api/trading*', authMiddleware);
 
+// نقطة نهاية آمنة لتعيين مفاتيح Binance API
+app.post('/api/settings/binance-api-keys', async (req, res) => {
+  try {
+    const { apiKey, secretKey, testnet = true } = req.body;
+    
+    // التحقق من صحة المدخلات
+    if (!apiKey || !secretKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'API Key and Secret Key are required',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // التحقق من تنسيق المفاتيح
+    if (apiKey.length < 20 || secretKey.length < 20) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid API key format',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    console.log(`[SECURITY] API keys validation started for ${testnet ? 'testnet' : 'live'} environment`);
+
+    // التحقق من صحة المفاتيح مع Binance
+    const validationResult = await validateBinanceApiKeys(apiKey, secretKey, testnet);
+    
+    if (!validationResult.valid) {
+      console.warn(`[SECURITY] API keys validation failed: ${validationResult.error}`);
+      return res.status(400).json({
+        success: false,
+        error: validationResult.error,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // تشفير وحفظ المفاتيح
+    try {
+      encryptedApiKeys = {
+        apiKey: encryptData(apiKey),
+        secretKey: encryptData(secretKey),
+        testnet,
+        validated: true,
+        timestamp: new Date().toISOString()
+      };
+
+      console.log(`[SECURITY] ✅ API keys encrypted and stored securely`);
+      console.log(`[SECURITY] Permissions: ${validationResult.permissions?.join(', ') || 'Unknown'}`);
+
+      res.json({
+        success: true,
+        data: {
+          validated: true,
+          testnet,
+          permissions: validationResult.permissions || [],
+          timestamp: encryptedApiKeys.timestamp
+        },
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (encryptionError) {
+      console.error('[SECURITY] Encryption failed:', encryptionError);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to encrypt API keys',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SECURITY] API keys setup failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during API key setup',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// مسح مفاتيح API
+app.delete('/api/settings/binance-api-keys', (req, res) => {
+  try {
+    encryptedApiKeys = {
+      apiKey: null,
+      secretKey: null,
+      testnet: true,
+      validated: false,
+      timestamp: null
+    };
+    
+    console.log('[SECURITY] API keys cleared from server');
+    
+    res.json({
+      success: true,
+      message: 'API keys cleared successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[SECURITY] Failed to clear API keys:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clear API keys',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// فحص حالة اتصال Binance
+app.get('/api/binance/connection-status', (req, res) => {
+  try {
+    const hasKeys = encryptedApiKeys.apiKey && encryptedApiKeys.secretKey;
+    
+    res.json({
+      success: true,
+      data: {
+        connected: hasKeys && encryptedApiKeys.validated,
+        testnet: encryptedApiKeys.testnet,
+        permissions: hasKeys ? ['SPOT'] : [],
+        lastValidation: encryptedApiKeys.timestamp
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check connection status',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // تنفيذ أمر تداول
 app.post('/api/order', async (req, res) => {
   try {
@@ -310,6 +456,14 @@ app.post('/api/order', async (req, res) => {
       
     } else {
       // تنفيذ حقيقي عبر Binance API
+      if (!encryptedApiKeys.validated) {
+        return res.status(400).json({
+          success: false,
+          error: 'Binance API keys not configured or validated',
+          timestamp: new Date().toISOString()
+        });
+      }
+      
       result = await executeBinanceOrder({
         symbol,
         side,
@@ -881,6 +1035,15 @@ async function getBinanceOpenOrders(symbol) {
 async function executeBinanceOrder(orderData) {
   // تنفيذ أمر حقيقي عبر Binance API
   // هذا يتطلب استخدام مفاتيح API الحقيقية
+  
+  if (!encryptedApiKeys.validated) {
+    throw new Error('Binance API keys not configured');
+  }
+  
+  // فك تشفير المفاتيح للاستخدام
+  const apiKey = decryptData(encryptedApiKeys.apiKey);
+  const secretKey = decryptData(encryptedApiKeys.secretKey);
+  
   const signature = require('./utils/signature');
   
   const timestamp = Date.now();
@@ -900,7 +1063,7 @@ async function executeBinanceOrder(orderData) {
   const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/order`, {
     method: 'POST',
     headers: {
-      'X-MBX-APIKEY': process.env.BINANCE_API_KEY,
+      'X-MBX-APIKEY': apiKey,
       'Content-Type': 'application/x-www-form-urlencoded'
     },
     body: `${queryString}&signature=${sig}`
@@ -915,6 +1078,12 @@ async function executeBinanceOrder(orderData) {
 }
 
 async function getBinanceAccountInfo() {
+  if (!encryptedApiKeys.validated) {
+    throw new Error('Binance API keys not configured');
+  }
+  
+  const apiKey = decryptData(encryptedApiKeys.apiKey);
+  
   const signature = require('./utils/signature');
   
   const timestamp = Date.now();
@@ -924,7 +1093,7 @@ async function getBinanceAccountInfo() {
   const fetch = (await import('node-fetch')).default;
   const response = await fetch(`${process.env.BINANCE_BASE_URL}/v3/account?${queryString}&signature=${sig}`, {
     headers: {
-      'X-MBX-APIKEY': process.env.BINANCE_API_KEY
+      'X-MBX-APIKEY': apiKey
     }
   });
   
@@ -934,6 +1103,116 @@ async function getBinanceAccountInfo() {
   }
   
   return await response.json();
+}
+
+// دوال التشفير الآمنة
+function encryptData(text) {
+  try {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipher(ALGORITHM, ENCRYPTION_KEY);
+    
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      encrypted,
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex')
+    };
+  } catch (error) {
+    console.error('[ENCRYPTION] Failed to encrypt data:', error);
+    throw new Error('Encryption failed');
+  }
+}
+
+function decryptData(encryptedData) {
+  try {
+    if (!encryptedData || !encryptedData.encrypted) {
+      throw new Error('No encrypted data provided');
+    }
+    
+    const decipher = crypto.createDecipher(ALGORITHM, ENCRYPTION_KEY);
+    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  } catch (error) {
+    console.error('[DECRYPTION] Failed to decrypt data:', error);
+    throw new Error('Decryption failed');
+  }
+}
+
+// التحقق من صحة مفاتيح Binance API
+async function validateBinanceApiKeys(apiKey, secretKey, testnet = true) {
+  try {
+    const baseUrl = testnet 
+      ? 'https://testnet.binance.vision/api'
+      : 'https://api.binance.com/api';
+    
+    // إنشاء توقيع للاختبار
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    
+    const signature = crypto
+      .createHmac('sha256', secretKey)
+      .update(queryString)
+      .digest('hex');
+    
+    // اختبار الاتصال مع account endpoint
+    const fetch = (await import('node-fetch')).default;
+    const response = await fetch(`${baseUrl}/v3/account?${queryString}&signature=${signature}`, {
+      headers: {
+        'X-MBX-APIKEY': apiKey
+      },
+      timeout: 10000
+    });
+    
+    if (response.ok) {
+      const accountData = await response.json();
+      
+      return {
+        valid: true,
+        permissions: accountData.permissions || ['SPOT'],
+        accountType: accountData.accountType || 'SPOT',
+        canTrade: accountData.canTrade || false
+      };
+    } else {
+      const errorData = await response.json().catch(() => ({}));
+      
+      let errorMessage = 'Invalid API credentials';
+      if (response.status === 401) {
+        errorMessage = 'API key or signature invalid';
+      } else if (response.status === 403) {
+        errorMessage = 'API key does not have required permissions';
+      } else if (errorData.msg) {
+        errorMessage = errorData.msg;
+      }
+      
+      return {
+        valid: false,
+        error: errorMessage
+      };
+    }
+    
+  } catch (error) {
+    console.error('[VALIDATION] Binance API validation failed:', error);
+    
+    let errorMessage = 'Connection failed';
+    if (error.code === 'ENOTFOUND') {
+      errorMessage = 'Network connection failed';
+    } else if (error.code === 'ETIMEDOUT') {
+      errorMessage = 'Request timeout - please try again';
+    }
+    
+    return {
+      valid: false,
+      error: errorMessage
+    };
+  }
 }
 
 // إنشاء مجلد السجلات
@@ -951,7 +1230,8 @@ app.listen(PORT, () => {
   console.log(`🔒 Security: Frontend token authentication enabled`);
   console.log(`📝 Database: SQLite at ${dbPath}`);
   console.log(`🔄 Rate Limiting: ${process.env.RATE_LIMIT_REQUESTS || 100} requests/minute`);
-  console.log(`🌐 Binance API: ${process.env.BINANCE_BASE_URL || 'https://api.binance.com/api'}`);
+  console.log(`🔐 API Keys: ${encryptedApiKeys.validated ? '✅ Configured and validated' : '❌ Not configured'}`);
+  console.log(`🌐 Binance Mode: ${encryptedApiKeys.testnet ? '🧪 Testnet' : '⚠️ Live Trading'}`);
   
   if (isDryRun) {
     console.log(`\n✅ Safe Mode Active - No real trades will be executed`);
@@ -960,8 +1240,9 @@ app.listen(PORT, () => {
   }
   
   console.log(`\n📊 Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`🔒 Security: Frontend token authentication enabled`);
-  console.log(`📝 Logging: SQLite database at ${dbPath}`);
+  console.log(`🔒 Security: API keys encrypted with AES-256`);
+  console.log(`📝 Database: SQLite at ${dbPath}`);
+  console.log(`🔑 Encryption: ${ENCRYPTION_KEY.length === 64 ? '✅ Strong key' : '⚠️ Weak key'}`);
 });
 
 // معالجة الإغلاق الآمن

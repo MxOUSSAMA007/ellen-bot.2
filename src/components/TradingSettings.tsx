@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Key, Shield, Zap, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Key, Shield, Zap, AlertTriangle, CheckCircle, Lock, Eye, EyeOff } from 'lucide-react';
+import { backendService } from '../services/BackendService';
 
 interface TradingSettingsProps {
   onConnectionChange: (connected: boolean) => void;
@@ -8,6 +9,10 @@ interface TradingSettingsProps {
 export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionChange }) => {
   const [apiKey, setApiKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationMessage, setValidationMessage] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [isDryRun, setIsDryRun] = useState(true);
   const [riskSettings, setRiskSettings] = useState({
@@ -17,16 +22,60 @@ export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionCh
     takeProfit: 10
   });
 
-  const handleConnect = () => {
-    if (apiKey && secretKey) {
-      setIsConnected(true);
-      onConnectionChange(true);
+  const handleConnect = async () => {
+    if (!apiKey || !secretKey) {
+      setValidationMessage('يرجى إدخال API Key و Secret Key');
+      return;
+    }
+
+    setIsValidating(true);
+    setValidationMessage('جاري التحقق من صحة المفاتيح...');
+
+    try {
+      // إرسال المفاتيح إلى الخادم الخلفي للتحقق والتخزين الآمن
+      const result = await backendService.setBinanceApiKeys({
+        apiKey: apiKey.trim(),
+        secretKey: secretKey.trim(),
+        testnet: true // استخدام testnet للتحقق أولاً
+      });
+
+      if (result.success) {
+        // مسح المفاتيح من الواجهة الأمامية فوراً
+        setApiKey('');
+        setSecretKey('');
+        
+        setIsConnected(true);
+        onConnectionChange(true);
+        setValidationMessage('تم التحقق من المفاتيح بنجاح وحفظها بشكل آمن');
+        
+        // مسح رسالة النجاح بعد 3 ثواني
+        setTimeout(() => setValidationMessage(''), 3000);
+      } else {
+        setValidationMessage(`فشل في التحقق: ${result.error}`);
+        setIsConnected(false);
+        onConnectionChange(false);
+      }
+    } catch (error) {
+      console.error('API key validation failed:', error);
+      setValidationMessage('خطأ في الاتصال بالخادم');
+      setIsConnected(false);
+      onConnectionChange(false);
+    } finally {
+      setIsValidating(false);
     }
   };
 
   const handleDisconnect = () => {
+    // مسح المفاتيح من الخادم
+    backendService.clearBinanceApiKeys().catch(console.error);
+    
     setIsConnected(false);
     onConnectionChange(false);
+    setValidationMessage('تم قطع الاتصال ومسح المفاتيح');
+    
+    // مسح أي مفاتيح متبقية في الواجهة
+    setApiKey('');
+    setSecretKey('');
   };
 
   return (
@@ -41,56 +90,120 @@ export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionCh
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">
-              API Key
+              API Key *
             </label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="أدخل API Key الخاص بك"
-              className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+            <div className="relative">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="أدخل API Key الخاص بك (سيتم إرساله للخادم الآمن)"
+                className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={isValidating}
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">
-              Secret Key
+              Secret Key *
             </label>
-            <input
-              type="password"
-              value={secretKey}
-              onChange={(e) => setSecretKey(e.target.value)}
-              placeholder="أدخل Secret Key الخاص بك"
-              className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+            <div className="relative">
+              <input
+                type={showSecretKey ? "text" : "password"}
+                value={secretKey}
+                onChange={(e) => setSecretKey(e.target.value)}
+                placeholder="أدخل Secret Key الخاص بك (سيتم تشفيره)"
+                className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 pr-10 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={isValidating}
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecretKey(!showSecretKey)}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-white"
+              >
+                {showSecretKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
+
+          {/* Validation Message */}
+          {validationMessage && (
+            <div className={`p-3 rounded-lg text-sm ${
+              validationMessage.includes('نجاح') 
+                ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                : validationMessage.includes('جاري')
+                ? 'bg-blue-500/10 border border-blue-500/30 text-blue-400'
+                : 'bg-red-500/10 border border-red-500/30 text-red-400'
+            }`}>
+              <div className="flex items-center space-x-2">
+                {validationMessage.includes('جاري') && (
+                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                )}
+                <span>{validationMessage}</span>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center space-x-4">
             {!isConnected ? (
               <button
                 onClick={handleConnect}
-                disabled={!apiKey || !secretKey}
+                disabled={!apiKey || !secretKey || isValidating}
                 className="flex items-center space-x-2 px-6 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-all duration-200"
               >
-                <CheckCircle className="w-4 h-4" />
-                <span>اتصال</span>
+                {isValidating ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>جاري التحقق...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>تحقق وحفظ آمن</span>
+                  </>
+                )}
               </button>
             ) : (
               <button
                 onClick={handleDisconnect}
+                disabled={isValidating}
                 className="flex items-center space-x-2 px-6 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium transition-all duration-200"
               >
                 <AlertTriangle className="w-4 h-4" />
-                <span>قطع الاتصال</span>
+                <span>قطع الاتصال ومسح المفاتيح</span>
               </button>
             )}
             
             {isConnected && (
               <div className="flex items-center space-x-2 text-emerald-400">
                 <CheckCircle className="w-4 h-4" />
-                <span className="text-sm">متصل بنجاح</span>
+                <span className="text-sm">متصل بنجاح - المفاتيح محفوظة بأمان</span>
               </div>
             )}
+          </div>
+          
+          {/* Security Notice */}
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+            <div className="flex items-start space-x-3">
+              <Lock className="w-5 h-5 text-blue-400 mt-0.5" />
+              <div>
+                <h4 className="text-blue-400 font-medium">الأمان المحسن</h4>
+                <ul className="text-blue-200/80 text-sm mt-1 space-y-1">
+                  <li>• المفاتيح يتم إرسالها مباشرة للخادم الآمن عبر HTTPS</li>
+                  <li>• لا يتم حفظ المفاتيح في الواجهة الأمامية أو localStorage</li>
+                  <li>• يتم تشفير المفاتيح في الخادم باستخدام AES-256</li>
+                  <li>• التحقق من صحة المفاتيح قبل القبول</li>
+                </ul>
+              </div>
+            </div>
           </div>
         </div>
       </div>
