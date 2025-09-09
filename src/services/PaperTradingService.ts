@@ -54,21 +54,21 @@ export class PaperTradingService {
   private constructor() {
     this.account = {
       balances: {
-        'USDT': parseFloat(process.env.VITE_PAPER_TRADING_BALANCE || '10000'),
+        'USDT': parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000'),
         'BTC': 0,
         'ETH': 0,
         'BNB': 0,
         'ADA': 0,
         'SOL': 0
       },
-      totalValue: parseFloat(process.env.VITE_PAPER_TRADING_BALANCE || '10000'),
+      totalValue: parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000'),
       unrealizedPnL: 0,
       realizedPnL: 0,
       totalTrades: 0,
       winningTrades: 0,
       dailyPnL: 0,
       maxDrawdown: 0,
-      peakBalance: parseFloat(process.env.VITE_PAPER_TRADING_BALANCE || '10000')
+      peakBalance: parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000')
     };
     
     this.initializeMarketData();
@@ -273,7 +273,7 @@ export class PaperTradingService {
     }
 
     // حساب الرسوم
-    const feeRate = parseFloat(process.env.VITE_PAPER_TRADING_FEE_RATE || '0.001');
+    const feeRate = parseFloat(import.meta.env.VITE_PAPER_TRADING_FEE_RATE || '0.001');
     const fees = order.quantity * executedPrice * feeRate;
 
     // محاكاة تأخير التنفيذ
@@ -416,7 +416,7 @@ export class PaperTradingService {
     const currentDrawdown = ((this.account.peakBalance - totalValue) / this.account.peakBalance) * 100;
     this.account.maxDrawdown = Math.max(this.account.maxDrawdown, currentDrawdown);
     
-    const initialBalance = parseFloat(process.env.VITE_PAPER_TRADING_BALANCE || '10000');
+    const initialBalance = parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000');
     this.account.realizedPnL = totalValue - initialBalance;
   }
 
@@ -425,7 +425,7 @@ export class PaperTradingService {
    */
   private calculateSlippage(quantity: number, symbol: string, marketData: MarketSimulation): number {
     // انزلاق أساسي 0.05% + انزلاق إضافي حسب الكمية
-    const baseSlippage = parseFloat(process.env.VITE_PAPER_TRADING_SLIPPAGE || '0.0005');
+    const baseSlippage = parseFloat(import.meta.env.VITE_PAPER_TRADING_SLIPPAGE || '0.0005');
     
     // انزلاق إضافي بناءً على حجم الأمر مقارنة بالسيولة
     const orderValue = quantity * marketData.currentPrice;
@@ -622,7 +622,7 @@ export class PaperTradingService {
    * إعادة تعيين الحساب
    */
   public resetAccount(): void {
-    const initialBalance = parseFloat(process.env.VITE_PAPER_TRADING_BALANCE || '10000');
+    const initialBalance = parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000');
     
     this.account = {
       balances: {
