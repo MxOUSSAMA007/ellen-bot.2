@@ -236,19 +236,36 @@ export const TradingDashboard: React.FC = () => {
                   <span className="text-white">
                     ${paperTradingService.getMarketPrices()[selectedSymbol]?.currentPrice.toFixed(2) || 'N/A'}
                   </span>
-                </div>
+                ${paperTradingService.getMarketPrices()[selectedSymbol]?.currentPrice.toFixed(2) || 'جاري التحميل...'}
                 <div className="flex justify-between">
                   <span className="text-slate-400">التغيير 24س:</span>
-                  <span className="text-emerald-400">+2.45%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">الحجم:</span>
-                  <span className="text-white">
-                    {((paperTradingService.getMarketPrices()[selectedSymbol]?.volume24h || 0) / 1000000000).toFixed(1)}B
-                  </span>
-                </div>
-              </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">أفضل عرض:</span>
+              <span className="text-emerald-400">
+                ${paperTradingService.getMarketPrices()[selectedSymbol]?.bid.toFixed(2) || 'N/A'}
+              </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">أفضل طلب:</span>
+              <span className="text-red-400">
+                ${paperTradingService.getMarketPrices()[selectedSymbol]?.ask.toFixed(2) || 'N/A'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">السبريد:</span>
+              <span className="text-yellow-400">
+                {paperTradingService.getMarketPrices()[selectedSymbol]?.spread.toFixed(3) || 'N/A'}%
+              </span>
+            </div>
+                  <span className="text-emerald-400">+2.45%</span>
+              <span className="text-slate-400">آخر تحديث:</span>
+              <span className="text-slate-400 text-xs">
+                {paperTradingService.getMarketPrices()[selectedSymbol]?.lastUpdate 
+                  ? new Date(paperTradingService.getMarketPrices()[selectedSymbol].lastUpdate).toLocaleTimeString('ar-SA')
+                  : 'N/A'
+                }
+              </span>
+                  <span className="text-slate-400">الحجم:</span>
           </div>
         </div>
       </div>

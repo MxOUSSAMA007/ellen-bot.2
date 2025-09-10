@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, Activity, Target, Brain, Zap } from 'lucide-react';
+import { PaperTradingService } from '../services/PaperTradingService';
 
 interface MarketData {
   symbol: string;
@@ -9,9 +10,13 @@ interface MarketData {
   signal: 'BUY' | 'SELL' | 'HOLD';
   confidence: number;
   analysis: string;
+  bid: number;
+  ask: number;
+  spread: number;
 }
 
 export const MarketAnalysis: React.FC = () => {
+  const [paperTradingService] = useState(() => PaperTradingService.getInstance());
   const [marketData, setMarketData] = useState<MarketData[]>([
     {
       symbol: 'BTCUSDT',
@@ -20,7 +25,10 @@ export const MarketAnalysis: React.FC = () => {
       volume: 1200000000,
       signal: 'BUY',
       confidence: 85,
-      analysis: 'اتجاه صاعد قوي مع كسر مستوى المقاومة'
+      analysis: 'اتجاه صاعد قوي مع كسر مستوى المقاومة',
+      bid: 43240.00,
+      ask: 43260.00,
+      spread: 0.046
     },
     {
       symbol: 'ETHUSDT',
@@ -29,7 +37,10 @@ export const MarketAnalysis: React.FC = () => {
       volume: 800000000,
       signal: 'HOLD',
       confidence: 65,
-      analysis: 'تذبذب جانبي، انتظار كسر المستوى'
+      analysis: 'تذبذب جانبي، انتظار كسر المستوى',
+      bid: 2649.50,
+      ask: 2650.50,
+      spread: 0.038
     },
     {
       symbol: 'BNBUSDT',
@@ -38,12 +49,44 @@ export const MarketAnalysis: React.FC = () => {
       volume: 150000000,
       signal: 'BUY',
       confidence: 78,
-      analysis: 'زخم إيجابي مع زيادة في الحجم'
+      analysis: 'زخم إيجابي مع زيادة في الحجم',
+      bid: 315.30,
+      ask: 315.70,
+      spread: 0.127
     }
   ]);
 
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [analysisSpeed, setAnalysisSpeed] = useState('fast');
+
+  useEffect(() => {
+    // تحديث بيانات السوق من الخدمة
+    const updateMarketData = () => {
+      const realMarketData = paperTradingService.getMarketPrices();
+      
+      setMarketData(prevData => 
+        prevData.map(item => {
+          const realData = realMarketData[item.symbol];
+          if (realData) {
+            return {
+              ...item,
+              price: realData.currentPrice,
+              bid: realData.bid,
+              ask: realData.ask,
+              spread: realData.spread,
+              volume: realData.volume24h
+            };
+          }
+          return item;
+        })
+      );
+    };
+
+    updateMarketData();
+    const interval = setInterval(updateMarketData, 5000);
+    
+    return () => clearInterval(interval);
+  }, [paperTradingService]);
 
   const getSignalColor = (signal: string) => {
     switch (signal) {
@@ -141,6 +184,21 @@ export const MarketAnalysis: React.FC = () => {
               <div className="flex justify-between">
                 <span className="text-slate-400">الحجم:</span>
                 <span className="text-white">${(item.volume / 1000000).toFixed(0)}M</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span className="text-slate-400">أفضل عرض:</span>
+                <span className="text-emerald-400">${item.bid.toFixed(2)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span className="text-slate-400">أفضل طلب:</span>
+                <span className="text-red-400">${item.ask.toFixed(2)}</span>
+              </div>
+
+              <div className="flex justify-between">
+                <span className="text-slate-400">السبريد:</span>
+                <span className="text-yellow-400">{item.spread.toFixed(3)}%</span>
               </div>
 
               <div className="flex justify-between">

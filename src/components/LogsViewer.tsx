@@ -261,7 +261,10 @@ export const LogsViewer: React.FC = () => {
                       {log.executedQuantity ? log.executedQuantity.toFixed(6) : '-'}
                     </td>
                     <td className="py-3 px-6 text-white">
-                      {log.status === 'FILLED' ? '100%' : '0%'}
+                      {log.status === 'FILLED' ? '100%' : 
+                       log.status === 'PARTIALLY_FILLED' ? 
+                       `${((log.executedQuantity || 0) / (log.quantity || 1) * 100).toFixed(1)}%` : 
+                       '0%'}
                     </td>
                     <td className="py-3 px-6">
                       {log.type && (
@@ -269,9 +272,19 @@ export const LogsViewer: React.FC = () => {
                           {log.type}
                         </span>
                       )}
+                      {log.latency && (
+                        <span className="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs ml-1">
+                          {log.latency.toFixed(0)}ms
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-6 text-slate-400 text-xs max-w-xs truncate">
                       {log.reason || log.status}
+                      {log.slippage && (
+                        <div className="text-yellow-400">
+                          انزلاق: {(log.slippage * 100).toFixed(3)}%
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))

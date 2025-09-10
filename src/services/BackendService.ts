@@ -117,6 +117,48 @@ export class BackendService {
   }
 
   /**
+   * الحصول على عمق السوق (Order Book)
+   */
+  async getOrderBook(symbol: string, limit: number = 100): Promise<{
+    bids: Array<{ price: number; quantity: number }>;
+    asks: Array<{ price: number; quantity: number }>;
+    lastUpdateId: number;
+    timestamp: number;
+  } | null> {
+    try {
+      const result = await this.makeSecureRequest<{
+        bids: Array<{ price: number; quantity: number }>;
+        asks: Array<{ price: number; quantity: number }>;
+        lastUpdateId: number;
+        timestamp: number;
+      }>(`/depth`, {
+        method: 'GET',
+        params: { symbol, limit: limit.toString() }
+      });
+      return result.data || null;
+    } catch (error) {
+      console.error('Failed to fetch order book:', error);
+      return null;
+    }
+  }
+
+  /**
+   * الحصول على أسعار السوق الحالية
+   */
+  async getCurrentPrices(symbol?: string): Promise<any> {
+    try {
+      const result = await this.makeSecureRequest(`/ticker/price`, {
+        method: 'GET',
+        params: symbol ? { symbol } : undefined
+      });
+      return result.data;
+    } catch (error) {
+      console.error('Failed to fetch current prices:', error);
+      return null;
+    }
+  }
+
+  /**
    * إرسال أمر تداول (آمن - يتم عبر الخادم)
    */
   async placeOrder(orderRequest: OrderRequest): Promise<any> {

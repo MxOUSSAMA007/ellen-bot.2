@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { Key, Shield, Zap, AlertTriangle, CheckCircle, Lock, Eye, EyeOff } from 'lucide-react';
 import { backendService } from '../services/BackendService';
+import { PaperTradingService } from '../services/PaperTradingService';
 
 interface TradingSettingsProps {
   onConnectionChange: (connected: boolean) => void;
 }
 
 export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionChange }) => {
+  const [paperTradingService] = useState(() => PaperTradingService.getInstance());
   const [apiKey, setApiKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -15,6 +17,7 @@ export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionCh
   const [validationMessage, setValidationMessage] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [isDryRun, setIsDryRun] = useState(true);
+  const [paperConfig, setPaperConfig] = useState(paperTradingService.getConfig());
   const [riskSettings, setRiskSettings] = useState({
     maxDailyLoss: 100,
     maxPositionSize: 10,
@@ -253,6 +256,119 @@ export const TradingSettings: React.FC<TradingSettingsProps> = ({ onConnectionCh
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Paper Trading Configuration */}
+      <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
+        <h3 className="text-lg font-semibold mb-4 flex items-center">
+          <Shield className="w-5 h-5 text-blue-400 mr-2" />
+          إعدادات التداول الورقي
+        </h3>
+        
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-white font-medium">تفعيل الانزلاق (Slippage)</h4>
+                <p className="text-slate-400 text-sm">محاكاة انزلاق السعر الواقعي</p>
+              </div>
+              <button
+                onClick={() => {
+                  const newConfig = { ...paperConfig, enableSlippage: !paperConfig.enableSlippage };
+                  setPaperConfig(newConfig);
+                  paperTradingService.updateConfig(newConfig);
+                }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  paperConfig.enableSlippage ? 'bg-blue-600' : 'bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    paperConfig.enableSlippage ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-white font-medium">التنفيذ الجزئي</h4>
+                <p className="text-slate-400 text-sm">محاكاة التنفيذ الجزئي للأوامر</p>
+              </div>
+              <button
+                onClick={() => {
+                  const newConfig = { ...paperConfig, enablePartialFills: !paperConfig.enablePartialFills };
+                  setPaperConfig(newConfig);
+                  paperTradingService.updateConfig(newConfig);
+                }}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  paperConfig.enablePartialFills ? 'bg-blue-600' : 'bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    paperConfig.enablePartialFills ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                معدل الانزلاق (%)
+              </label>
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={paperConfig.slippageRate * 100}
+                onChange={(e) => {
+                  const newConfig = { ...paperConfig, slippageRate: Number(e.target.value) / 100 };
+                  setPaperConfig(newConfig);
+                  paperTradingService.updateConfig(newConfig);
+                }}
+                className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                معدل الرسوم (%)
+              </label>
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={paperConfig.feeRate * 100}
+                onChange={(e) => {
+                  const newConfig = { ...paperConfig, feeRate: Number(e.target.value) / 100 };
+                  setPaperConfig(newConfig);
+                  paperTradingService.updateConfig(newConfig);
+                }}
+                className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+          </div>
+
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+            <div className="flex items-start space-x-3">
+              <CheckCircle className="w-5 h-5 text-blue-400 mt-0.5" />
+              <div>
+                <h4 className="text-blue-400 font-medium">التداول الورقي المحسن</h4>
+                <ul className="text-blue-200/80 text-sm mt-1 space-y-1">
+                  <li>• يستخدم بيانات Binance الحقيقية</li>
+                  <li>• محاكاة order book واقعية</li>
+                  <li>• انزلاق وتنفيذ جزئي قابل للتخصيص</li>
+                  <li>• تسجيل مفصل للأداء والكمون</li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

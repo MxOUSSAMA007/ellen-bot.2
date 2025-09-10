@@ -13,6 +13,10 @@ interface HistoricalTrade {
   duration: string;
   timestamp: Date;
   strategy: string;
+  fees?: number;
+  slippage?: number;
+  latency?: number;
+  status: 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED';
 }
 
 export const TradeHistory: React.FC = () => {
@@ -169,6 +173,8 @@ export const TradeHistory: React.FC = () => {
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">سعر الخروج</th>
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">الربح/الخسارة</th>
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">النسبة</th>
+                <th className="text-left py-4 px-6 text-slate-300 font-medium">الرسوم</th>
+                <th className="text-left py-4 px-6 text-slate-300 font-medium">الانزلاق</th>
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">المدة</th>
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">الاستراتيجية</th>
                 <th className="text-left py-4 px-6 text-slate-300 font-medium">التاريخ</th>
@@ -187,6 +193,11 @@ export const TradeHistory: React.FC = () => {
                       {trade.side === 'BUY' ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                       <span>{trade.side}</span>
                     </span>
+                    {trade.status === 'PARTIALLY_FILLED' && (
+                      <span className="px-1 py-0.5 bg-yellow-500/20 text-yellow-400 rounded text-xs ml-1">
+                        جزئي
+                      </span>
+                    )}
                   </td>
                   <td className="py-4 px-6 text-white">{trade.quantity}</td>
                   <td className="py-4 px-6 text-white">${trade.entryPrice.toFixed(2)}</td>
@@ -201,11 +212,22 @@ export const TradeHistory: React.FC = () => {
                       {trade.profitPercent >= 0 ? '+' : ''}{trade.profitPercent.toFixed(2)}%
                     </span>
                   </td>
+                  <td className="py-4 px-6 text-yellow-400">
+                    ${trade.fees?.toFixed(4) || '0.0000'}
+                  </td>
+                  <td className="py-4 px-6 text-orange-400">
+                    {trade.slippage ? `${(trade.slippage * 100).toFixed(3)}%` : '0.000%'}
+                  </td>
                   <td className="py-4 px-6 text-slate-300">{trade.duration}</td>
                   <td className="py-4 px-6">
                     <span className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
                       {trade.strategy}
                     </span>
+                    {trade.latency && (
+                      <div className="text-purple-400 text-xs mt-1">
+                        {trade.latency.toFixed(0)}ms
+                      </div>
+                    )}
                   </td>
                   <td className="py-4 px-6 text-slate-400">
                     {trade.timestamp.toLocaleDateString('ar-SA')}
@@ -216,6 +238,48 @@ export const TradeHistory: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Real-time Market Data Status */}
+      <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
+        <h3 className="text-lg font-semibold mb-4">حالة بيانات السوق الحقيقية</h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {['BTCUSDT', 'ETHUSDT', 'BNBUSDT'].map(symbol => {
+            const orderBookInfo = PaperTradingService.getInstance().getOrderBookInfo(symbol);
+            return (
+              <div key={symbol} className="bg-slate-700/30 rounded-lg p-4">
+                <h4 className="text-white font-medium mb-2">{symbol}</h4>
+                {orderBookInfo ? (
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">أفضل عرض:</span>
+                      <span className="text-emerald-400">${orderBookInfo.bestBid.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">أفضل طلب:</span>
+                      <span className="text-red-400">${orderBookInfo.bestAsk.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">السبريد:</span>
+                      <span className="text-yellow-400">{orderBookInfo.spread.toFixed(3)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">عمق العرض:</span>
+                      <span className="text-white">{orderBookInfo.bidDepth.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">عمق الطلب:</span>
+                      <span className="text-white">{orderBookInfo.askDepth.toFixed(2)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-slate-400 text-sm">جاري التحميل...</div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

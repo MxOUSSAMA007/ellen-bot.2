@@ -1,10 +1,10 @@
 /**
- * خدمة Paper Trading المحسنة - محاكاة واقعية للتداول
- * تدعم جميع أنواع الأوامر وتحاكي سلوك Binance بدقة
+ * خدمة Paper Trading المحسنة - محاكاة واقعية للتداول مع بيانات حقيقية
+ * تستخدم بيانات Binance الحقيقية وتحاكي order book وتنفيذ الأوامر بدقة
  */
 
 import { secureLoggingService } from './SecureLoggingService';
-import { RetryService } from './RetryService';
+import { backendService } from './BackendService';
 
 export interface PaperTradeOrder {
   id: string;
@@ -13,13 +13,21 @@ export interface PaperTradeOrder {
   type: 'MARKET' | 'LIMIT';
   quantity: number;
   price?: number;
-  status: 'PENDING' | 'FILLED' | 'CANCELLED' | 'REJECTED';
+  status: 'PENDING' | 'FILLED' | 'PARTIALLY_FILLED' | 'CANCELLED' | 'REJECTED';
   timestamp: string;
   executedPrice?: number;
   executedQuantity?: number;
+  remainingQuantity?: number;
   fees?: number;
   slippage?: number;
   reason?: string;
+  latency?: number;
+  fills: Array<{
+    price: number;
+    quantity: number;
+    fee: number;
+    timestamp: string;
+  }>;
 }
 
 export interface PaperAccount {
@@ -34,7 +42,7 @@ export interface PaperAccount {
   peakBalance: number;
 }
 
-export interface MarketSimulation {
+export interface RealMarketData {
   symbol: string;
   currentPrice: number;
   bid: number;
@@ -42,16 +50,41 @@ export interface MarketSimulation {
   spread: number;
   volume24h: number;
   lastUpdate: number;
+  orderBook: {
+    bids: Array<{ price: number; quantity: number }>;
+    asks: Array<{ price: number; quantity: number }>;
+    lastUpdateId: number;
+  };
 }
+
+export interface PaperTradingConfig {
+  enableSlippage: boolean;
+  enablePartialFills: boolean;
+  slippageRate: number;
+  feeRate: number;
+  maxSlippage: number;
+  partialFillProbability: number;
+}
+
 export class PaperTradingService {
   private static instance: PaperTradingService;
   private account: PaperAccount;
   private openOrders: Map<string, PaperTradeOrder> = new Map();
   private orderHistory: PaperTradeOrder[] = [];
-  private marketData: Map<string, MarketSimulation> = new Map();
+  private marketData: Map<string, RealMarketData> = new Map();
   private priceUpdateInterval: NodeJS.Timeout | null = null;
+  private config: PaperTradingConfig;
 
   private constructor() {
+    this.config = {
+      enableSlippage: true,
+      enablePartialFills: true,
+      slippageRate: parseFloat(import.meta.env.VITE_PAPER_TRADING_SLIPPAGE || '0.0005'),
+      feeRate: parseFloat(import.meta.env.VITE_PAPER_TRADING_FEE_RATE || '0.001'),
+      maxSlippage: 0.002, // 0.2% حد أقصى للانزلاق
+      partialFillProbability: 0.15 // 15% احتمال التنفيذ الجزئي
+    };
+
     this.account = {
       balances: {
         'USDT': parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000'),
@@ -71,8 +104,8 @@ export class PaperTradingService {
       peakBalance: parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000')
     };
     
-    this.initializeMarketData();
-    this.startPriceUpdates();
+    this.initializeRealMarketData();
+    this.startRealPriceUpdates();
   }
 
   public static getInstance(): PaperTradingService {
@@ -83,9 +116,122 @@ export class PaperTradingService {
   }
 
   /**
-   * تهيئة بيانات السوق الأولية
+   * تهيئة بيانات السوق الحقيقية من Binance
    */
-  private initializeMarketData(): void {
+  private async initializeRealMarketData(): Promise<void> {
+    const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
+    
+    try {
+      // جلب الأسعار الحالية
+      const currentPrices = await backendService.getCurrentPrices();
+      
+      if (Array.isArray(currentPrices)) {
+        for (const priceData of currentPrices) {
+          if (symbols.includes(priceData.symbol)) {
+            await this.updateSymbolMarketData(priceData.symbol, parseFloat(priceData.price));
+          }
+        }
+      }
+      
+      console.log('[PAPER TRADING] ✅ Real market data initialized');
+    } catch (error) {
+      console.error('[PAPER TRADING] Failed to initialize real market data:', error);
+      // استخدام بيانات افتراضية كـ fallback
+      this.initializeFallbackData();
+    }
+  }
+
+  /**
+   * تحديث بيانات السوق لرمز محدد
+   */
+  private async updateSymbolMarketData(symbol: string, currentPrice: number): Promise<void> {
+    try {
+      // جلب order book
+      const orderBook = await backendService.getOrderBook(symbol, 20);
+      
+      if (!orderBook) {
+        throw new Error(`Failed to fetch order book for ${symbol}`);
+      }
+
+      // حساب أفضل bid/ask
+      const bestBid = orderBook.bids.length > 0 ? orderBook.bids[0].price : currentPrice * 0.999;
+      const bestAsk = orderBook.asks.length > 0 ? orderBook.asks[0].price : currentPrice * 1.001;
+      const spread = ((bestAsk - bestBid) / bestBid) * 100;
+
+      // جلب بيانات الحجم من الشموع الأخيرة
+      const recentCandles = await backendService.getKlines(symbol, '1h', 24);
+      const volume24h = recentCandles.reduce((sum, candle) => sum + candle.volume, 0);
+
+      this.marketData.set(symbol, {
+        symbol,
+        currentPrice,
+        bid: bestBid,
+        ask: bestAsk,
+        spread,
+        volume24h,
+        lastUpdate: Date.now(),
+        orderBook: {
+          bids: orderBook.bids,
+          asks: orderBook.asks,
+          lastUpdateId: orderBook.lastUpdateId
+        }
+      });
+
+    } catch (error) {
+      console.error(`[PAPER TRADING] Failed to update market data for ${symbol}:`, error);
+      
+      // استخدام بيانات مبسطة كـ fallback
+      this.marketData.set(symbol, {
+        symbol,
+        currentPrice,
+        bid: currentPrice * 0.9995,
+        ask: currentPrice * 1.0005,
+        spread: 0.05,
+        volume24h: 1000000000,
+        lastUpdate: Date.now(),
+        orderBook: {
+          bids: [{ price: currentPrice * 0.9995, quantity: 10 }],
+          asks: [{ price: currentPrice * 1.0005, quantity: 10 }],
+          lastUpdateId: Date.now()
+        }
+      });
+    }
+  }
+
+  /**
+   * بدء تحديث الأسعار الحقيقية
+   */
+  private startRealPriceUpdates(): void {
+    this.priceUpdateInterval = setInterval(async () => {
+      await this.updateRealMarketPrices();
+    }, 5000); // تحديث كل 5 ثواني
+  }
+
+  /**
+   * تحديث أسعار السوق الحقيقية
+   */
+  private async updateRealMarketPrices(): Promise<void> {
+    try {
+      const symbols = Array.from(this.marketData.keys());
+      
+      // جلب الأسعار الحالية لجميع الرموز
+      for (const symbol of symbols) {
+        const priceData = await backendService.getCurrentPrices(symbol);
+        
+        if (priceData && priceData.price) {
+          await this.updateSymbolMarketData(symbol, parseFloat(priceData.price));
+        }
+      }
+      
+    } catch (error) {
+      console.error('[PAPER TRADING] Failed to update real market prices:', error);
+    }
+  }
+
+  /**
+   * بيانات افتراضية كـ fallback
+   */
+  private initializeFallbackData(): void {
     const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT'];
     const basePrices = {
       'BTCUSDT': 43250,
@@ -97,7 +243,7 @@ export class PaperTradingService {
 
     symbols.forEach(symbol => {
       const basePrice = basePrices[symbol as keyof typeof basePrices];
-      const spread = basePrice * 0.001; // 0.1% spread
+      const spread = basePrice * 0.001;
       
       this.marketData.set(symbol, {
         symbol,
@@ -106,41 +252,26 @@ export class PaperTradingService {
         ask: basePrice + spread / 2,
         spread: 0.1,
         volume24h: Math.random() * 1000000000 + 500000000,
-        lastUpdate: Date.now()
+        lastUpdate: Date.now(),
+        orderBook: {
+          bids: [
+            { price: basePrice * 0.9995, quantity: 10 },
+            { price: basePrice * 0.999, quantity: 5 }
+          ],
+          asks: [
+            { price: basePrice * 1.0005, quantity: 10 },
+            { price: basePrice * 1.001, quantity: 5 }
+          ],
+          lastUpdateId: Date.now()
+        }
       });
     });
+    
+    console.log('[PAPER TRADING] ⚠️ Using fallback market data');
   }
 
   /**
-   * بدء تحديث الأسعار التلقائي
-   */
-  private startPriceUpdates(): void {
-    this.priceUpdateInterval = setInterval(() => {
-      this.updateMarketPrices();
-    }, 2000); // تحديث كل ثانيتين
-  }
-
-  /**
-   * تحديث أسعار السوق (محاكاة)
-   */
-  private updateMarketPrices(): void {
-    this.marketData.forEach((market, symbol) => {
-      // محاكاة تحرك السعر
-      const volatility = 0.001; // 0.1% تقلب
-      const change = (Math.random() - 0.5) * volatility * market.currentPrice;
-      
-      market.currentPrice += change;
-      market.bid = market.currentPrice * 0.9995;
-      market.ask = market.currentPrice * 1.0005;
-      market.spread = ((market.ask - market.bid) / market.bid) * 100;
-      market.lastUpdate = Date.now();
-      
-      this.marketData.set(symbol, market);
-    });
-  }
-
-  /**
-   * تنفيذ أمر paper trading
+   * تنفيذ أمر paper trading مع محاكاة واقعية
    */
   public async placeOrder(orderRequest: {
     symbol: string;
@@ -149,15 +280,15 @@ export class PaperTradingService {
     quantity: number;
     price?: number;
     timeInForce?: 'GTC' | 'IOC' | 'FOK';
-    stopPrice?: number;
   }): Promise<PaperTradeOrder> {
     const orderId = this.generateOrderId();
     const timestamp = new Date().toISOString();
+    const executionStart = performance.now();
 
-    // الحصول على بيانات السوق
-    const marketData = this.getMarketData(orderRequest.symbol);
+    // الحصول على بيانات السوق الحقيقية
+    const marketData = this.marketData.get(orderRequest.symbol);
     if (!marketData) {
-      throw new Error(`Market data not available for ${orderRequest.symbol}`);
+      throw new Error(`Real market data not available for ${orderRequest.symbol}`);
     }
     
     const order: PaperTradeOrder = {
@@ -168,19 +299,26 @@ export class PaperTradingService {
       quantity: orderRequest.quantity,
       price: orderRequest.price,
       status: 'PENDING',
-      timestamp
+      timestamp,
+      fills: []
     };
 
-    // محاكاة تنفيذ الأمر
-    const executionResult = await this.simulateOrderExecution(order, marketData);
+    // محاكاة تنفيذ الأمر مع order book حقيقي
+    const executionResult = await this.simulateRealisticOrderExecution(order, marketData);
     
+    // حساب الكمون
+    const latency = performance.now() - executionStart;
+    order.latency = latency;
+
     if (executionResult.success) {
-      order.status = 'FILLED';
-      order.executedPrice = executionResult.executedPrice;
-      order.executedQuantity = executionResult.executedQuantity;
-      order.fees = executionResult.fees;
-      order.slippage = executionResult.slippage;
+      order.status = executionResult.partialFill ? 'PARTIALLY_FILLED' : 'FILLED';
+      order.executedPrice = executionResult.avgExecutionPrice;
+      order.executedQuantity = executionResult.totalExecutedQuantity;
+      order.remainingQuantity = order.quantity - executionResult.totalExecutedQuantity;
+      order.fees = executionResult.totalFees;
+      order.slippage = executionResult.totalSlippage;
       order.reason = executionResult.reason;
+      order.fills = executionResult.fills;
 
       // تحديث الرصيد
       this.updateAccountBalance(order);
@@ -191,7 +329,7 @@ export class PaperTradingService {
         action: order.side,
         price: order.executedPrice!,
         size: order.executedQuantity!,
-        reason: 'Paper trading order execution',
+        reason: `Paper trading: ${executionResult.reason}`,
         confidence: 100,
         strategy: 'PAPER_TRADING',
         isDryRun: true,
@@ -205,7 +343,7 @@ export class PaperTradingService {
       console.log(
         `[PAPER TRADING] ✅ ${order.side} ${order.executedQuantity?.toFixed(6)} ${order.symbol} ` +
         `@ $${order.executedPrice?.toFixed(2)} | Fees: $${order.fees?.toFixed(4)} | ` +
-        `Slippage: ${((order.slippage || 0) * 100).toFixed(3)}%`
+        `Slippage: ${((order.slippage || 0) * 100).toFixed(3)}% | Latency: ${latency.toFixed(1)}ms`
       );
     } else {
       order.status = 'REJECTED';
@@ -218,18 +356,18 @@ export class PaperTradingService {
   }
 
   /**
-   * محاكاة تنفيذ الأمر
+   * محاكاة تنفيذ الأمر الواقعية مع order book
    */
-  private async simulateOrderExecution(order: PaperTradeOrder, marketData: MarketSimulation): Promise<{
+  private async simulateRealisticOrderExecution(order: PaperTradeOrder, marketData: RealMarketData): Promise<{
     success: boolean;
-    executedPrice?: number;
-    executedQuantity?: number;
-    fees?: number;
-    slippage?: number;
+    avgExecutionPrice?: number;
+    totalExecutedQuantity?: number;
+    totalFees?: number;
+    totalSlippage?: number;
+    partialFill?: boolean;
+    fills?: Array<{ price: number; quantity: number; fee: number; timestamp: string }>;
     reason?: string;
   }> {
-    const currentPrice = marketData.currentPrice;
-    
     // فحص الرصيد المتاح
     if (!this.hasSufficientBalance(order, marketData)) {
       return {
@@ -247,67 +385,158 @@ export class PaperTradingService {
       };
     }
 
-    // تحديد سعر التنفيذ
-    let executedPrice: number;
+    // محاكاة تأخير الشبكة
+    await this.simulateNetworkLatency();
+
+    const fills: Array<{ price: number; quantity: number; fee: number; timestamp: string }> = [];
+    let remainingQuantity = order.quantity;
+    let totalExecutedQuantity = 0;
+    let totalFees = 0;
+    let totalSlippage = 0;
+    let weightedPriceSum = 0;
+
+    // تحديد الجانب المناسب من order book
+    const bookSide = order.side === 'BUY' ? marketData.orderBook.asks : marketData.orderBook.bids;
     
-    if (order.type === 'LIMIT' && order.price) {
-      // للأوامر المحددة، تحقق من إمكانية التنفيذ
-      if (order.side === 'BUY' && order.price < marketData.ask) {
-        return { success: false, reason: 'Limit price too low for BUY order' };
+    if (order.type === 'MARKET') {
+      // تنفيذ أمر السوق مقابل order book
+      for (const level of bookSide) {
+        if (remainingQuantity <= 0) break;
+
+        const availableQuantity = level.quantity;
+        const fillQuantity = Math.min(remainingQuantity, availableQuantity);
+        
+        // تطبيق انزلاق السعر
+        let executionPrice = level.price;
+        if (this.config.enableSlippage) {
+          const slippage = this.calculateDynamicSlippage(fillQuantity, order.symbol, marketData);
+          executionPrice = order.side === 'BUY' 
+            ? level.price * (1 + slippage)
+            : level.price * (1 - slippage);
+          totalSlippage += slippage * fillQuantity;
+        }
+
+        // حساب الرسوم
+        const fee = fillQuantity * executionPrice * this.config.feeRate;
+        totalFees += fee;
+
+        // إضافة التنفيذ
+        fills.push({
+          price: executionPrice,
+          quantity: fillQuantity,
+          fee,
+          timestamp: new Date().toISOString()
+        });
+
+        totalExecutedQuantity += fillQuantity;
+        weightedPriceSum += executionPrice * fillQuantity;
+        remainingQuantity -= fillQuantity;
+
+        // محاكاة التنفيذ الجزئي
+        if (this.config.enablePartialFills && Math.random() < this.config.partialFillProbability) {
+          break; // توقف عند تنفيذ جزئي
+        }
       }
-      if (order.side === 'SELL' && order.price > marketData.bid) {
-        return { success: false, reason: 'Limit price too high for SELL order' };
+
+    } else if (order.type === 'LIMIT' && order.price) {
+      // تنفيذ أمر محدد
+      const canExecute = order.side === 'BUY' 
+        ? order.price >= marketData.ask
+        : order.price <= marketData.bid;
+
+      if (canExecute) {
+        // تنفيذ بالسعر المحدد أو أفضل
+        const executionPrice = order.side === 'BUY' 
+          ? Math.min(order.price, marketData.ask)
+          : Math.max(order.price, marketData.bid);
+
+        const fee = order.quantity * executionPrice * this.config.feeRate;
+        
+        fills.push({
+          price: executionPrice,
+          quantity: order.quantity,
+          fee,
+          timestamp: new Date().toISOString()
+        });
+
+        totalExecutedQuantity = order.quantity;
+        totalFees = fee;
+        weightedPriceSum = executionPrice * order.quantity;
+      } else {
+        return {
+          success: false,
+          reason: `Limit price not reachable. Current ${order.side === 'BUY' ? 'ask' : 'bid'}: ${order.side === 'BUY' ? marketData.ask : marketData.bid}`
+        };
       }
-      executedPrice = order.price;
-    } else {
-      // أوامر السوق تستخدم أفضل سعر متاح
-      executedPrice = order.side === 'BUY' ? marketData.ask : marketData.bid;
     }
 
-    // محاكاة انزلاق السعر (slippage)
-    const slippage = this.calculateSlippage(order.quantity, order.symbol, marketData);
-    if (order.side === 'BUY') {
-      executedPrice *= (1 + slippage);
-    } else {
-      executedPrice *= (1 - slippage);
+    if (totalExecutedQuantity === 0) {
+      return {
+        success: false,
+        reason: 'No liquidity available at current market levels'
+      };
     }
 
-    // حساب الرسوم
-    const feeRate = parseFloat(import.meta.env.VITE_PAPER_TRADING_FEE_RATE || '0.001');
-    const fees = order.quantity * executedPrice * feeRate;
-
-    // محاكاة تأخير التنفيذ
-    await this.simulateExecutionDelay();
+    const avgExecutionPrice = weightedPriceSum / totalExecutedQuantity;
+    const avgSlippage = totalSlippage / totalExecutedQuantity;
+    const isPartialFill = totalExecutedQuantity < order.quantity;
 
     return {
       success: true,
-      executedPrice,
-      executedQuantity: order.quantity,
-      fees,
-      slippage,
-      reason: 'Order executed successfully'
+      avgExecutionPrice,
+      totalExecutedQuantity,
+      totalFees,
+      totalSlippage: avgSlippage,
+      partialFill: isPartialFill,
+      fills,
+      reason: isPartialFill 
+        ? `Partially filled: ${totalExecutedQuantity}/${order.quantity}`
+        : 'Order fully executed'
     };
   }
 
   /**
-   * محاكاة تأخير التنفيذ
+   * حساب انزلاق السعر الديناميكي
    */
-  private async simulateExecutionDelay(): Promise<void> {
-    // تأخير عشوائي بين 50-200ms لمحاكاة زمن التنفيذ الحقيقي
-    const delay = 50 + Math.random() * 150;
-    await new Promise(resolve => setTimeout(resolve, delay));
+  private calculateDynamicSlippage(quantity: number, symbol: string, marketData: RealMarketData): number {
+    if (!this.config.enableSlippage) return 0;
+
+    // انزلاق أساسي
+    let slippage = this.config.slippageRate;
+
+    // انزلاق إضافي بناءً على حجم الأمر
+    const orderValue = quantity * marketData.currentPrice;
+    const marketCapImpact = Math.min(orderValue / 1000000, 0.001); // تأثير رأس المال
+    
+    // انزلاق إضافي بناءً على السبريد الحالي
+    const spreadImpact = Math.max(0, (marketData.spread - 0.05) * 0.1);
+    
+    // انزلاق إضافي في أوقات التقلب العالي
+    const volatilityImpact = marketData.spread > 0.1 ? 0.0005 : 0;
+    
+    slippage += marketCapImpact + spreadImpact + volatilityImpact;
+    
+    return Math.min(slippage, this.config.maxSlippage);
+  }
+
+  /**
+   * محاكاة كمون الشبكة
+   */
+  private async simulateNetworkLatency(): Promise<void> {
+    // كمون واقعي بين 10-100ms
+    const latency = 10 + Math.random() * 90;
+    await new Promise(resolve => setTimeout(resolve, latency));
   }
 
   /**
    * فحص الرصيد المتاح
    */
-  private hasSufficientBalance(order: PaperTradeOrder, marketData: MarketSimulation): boolean {
+  private hasSufficientBalance(order: PaperTradeOrder, marketData: RealMarketData): boolean {
     const baseAsset = this.getBaseAsset(order.symbol);
     const quoteAsset = this.getQuoteAsset(order.symbol);
-    const currentPrice = marketData.currentPrice;
 
     if (order.side === 'BUY') {
-      const requiredQuote = order.quantity * currentPrice * 1.002; // مع هامش للرسوم
+      const requiredQuote = order.quantity * marketData.ask * 1.002; // مع هامش للرسوم
       return this.account.balances[quoteAsset] >= requiredQuote;
     } else {
       return this.account.balances[baseAsset] >= order.quantity;
@@ -327,13 +556,6 @@ export class PaperTradingService {
     };
     
     return minSizes[symbol] || 0.001;
-  }
-
-  /**
-   * الحصول على بيانات السوق
-   */
-  private getMarketData(symbol: string): MarketSimulation | null {
-    return this.marketData.get(symbol) || null;
   }
 
   /**
@@ -363,9 +585,7 @@ export class PaperTradingService {
     this.account.totalTrades++;
     
     // حساب الربح/الخسارة للصفقة
-    const tradeValue = order.executedQuantity! * order.executedPrice!;
     if (order.side === 'SELL') {
-      // حساب الربح من البيع
       const avgBuyPrice = this.getAverageBuyPrice(baseAsset);
       if (avgBuyPrice > 0) {
         const profit = (order.executedPrice! - avgBuyPrice) * order.executedQuantity!;
@@ -384,9 +604,24 @@ export class PaperTradingService {
    * حساب متوسط سعر الشراء
    */
   private getAverageBuyPrice(asset: string): number {
-    // في تطبيق حقيقي، نحتاج لتتبع متوسط سعر الشراء
-    // هنا نستخدم تقدير بسيط
-    return 0;
+    // حساب متوسط سعر الشراء من سجل الصفقات
+    const buyOrders = this.orderHistory.filter(order => 
+      order.side === 'BUY' && 
+      order.status === 'FILLED' && 
+      this.getBaseAsset(order.symbol) === asset
+    );
+
+    if (buyOrders.length === 0) return 0;
+
+    let totalQuantity = 0;
+    let totalValue = 0;
+
+    buyOrders.forEach(order => {
+      totalQuantity += order.executedQuantity || 0;
+      totalValue += (order.executedQuantity || 0) * (order.executedPrice || 0);
+    });
+
+    return totalQuantity > 0 ? totalValue / totalQuantity : 0;
   }
 
   /**
@@ -394,19 +629,29 @@ export class PaperTradingService {
    */
   private async updateAccountValue(): Promise<void> {
     let totalValue = 0;
+    let unrealizedPnL = 0;
 
     for (const [asset, balance] of Object.entries(this.account.balances)) {
       if (asset === 'USDT') {
         totalValue += balance;
-      } else {
-        const marketData = this.getMarketData(`${asset}USDT`);
-        if (marketData && balance > 0) {
-          totalValue += balance * marketData.currentPrice;
+      } else if (balance > 0) {
+        const marketData = this.marketData.get(`${asset}USDT`);
+        if (marketData) {
+          const currentValue = balance * marketData.currentPrice;
+          totalValue += currentValue;
+
+          // حساب الربح/الخسارة غير المحققة
+          const avgBuyPrice = this.getAverageBuyPrice(asset);
+          if (avgBuyPrice > 0) {
+            const positionPnL = (marketData.currentPrice - avgBuyPrice) * balance;
+            unrealizedPnL += positionPnL;
+          }
         }
       }
     }
 
     this.account.totalValue = totalValue;
+    this.account.unrealizedPnL = unrealizedPnL;
     
     // تحديث الذروة وحساب الـ drawdown
     if (totalValue > this.account.peakBalance) {
@@ -417,39 +662,24 @@ export class PaperTradingService {
     this.account.maxDrawdown = Math.max(this.account.maxDrawdown, currentDrawdown);
     
     const initialBalance = parseFloat(import.meta.env.VITE_PAPER_TRADING_BALANCE || '10000');
-    this.account.realizedPnL = totalValue - initialBalance;
-  }
-
-  /**
-   * حساب انزلاق السعر المحسن
-   */
-  private calculateSlippage(quantity: number, symbol: string, marketData: MarketSimulation): number {
-    // انزلاق أساسي 0.05% + انزلاق إضافي حسب الكمية
-    const baseSlippage = parseFloat(import.meta.env.VITE_PAPER_TRADING_SLIPPAGE || '0.0005');
-    
-    // انزلاق إضافي بناءً على حجم الأمر مقارنة بالسيولة
-    const orderValue = quantity * marketData.currentPrice;
-    const liquidityImpact = Math.min(orderValue / 100000, 0.002); // تأثير السيولة
-    
-    // انزلاق إضافي في أوقات التقلب العالي
-    const volatilitySlippage = marketData.spread > 0.2 ? 0.001 : 0;
-    
-    return baseSlippage + liquidityImpact + volatilitySlippage;
+    this.account.realizedPnL = totalValue - initialBalance - unrealizedPnL;
   }
 
   /**
    * استخراج العملة الأساسية من الرمز
    */
   private getBaseAsset(symbol: string): string {
-    // مثال: BTCUSDT -> BTC
-    return symbol.replace('USDT', '').replace('BTC', 'BTC').replace('ETH', 'ETH').replace('BNB', 'BNB');
+    if (symbol.endsWith('USDT')) return symbol.replace('USDT', '');
+    if (symbol.endsWith('BTC')) return symbol.replace('BTC', '');
+    if (symbol.endsWith('ETH')) return symbol.replace('ETH', '');
+    if (symbol.endsWith('BNB')) return symbol.replace('BNB', '');
+    return symbol.substring(0, 3); // افتراضي
   }
 
   /**
    * استخراج العملة المقتبسة من الرمز
    */
   private getQuoteAsset(symbol: string): string {
-    // معظم الأزواج تنتهي بـ USDT
     if (symbol.endsWith('USDT')) return 'USDT';
     if (symbol.endsWith('BTC')) return 'BTC';
     if (symbol.endsWith('ETH')) return 'ETH';
@@ -504,36 +734,14 @@ export class PaperTradingService {
   }
 
   /**
-   * الحصول على أسعار السوق الحالية
+   * الحصول على أسعار السوق الحقيقية
    */
-  public getMarketPrices(): Record<string, MarketSimulation> {
-    const prices: Record<string, MarketSimulation> = {};
+  public getMarketPrices(): Record<string, RealMarketData> {
+    const prices: Record<string, RealMarketData> = {};
     this.marketData.forEach((data, symbol) => {
       prices[symbol] = { ...data };
     });
     return prices;
-  }
-
-  /**
-   * محاكاة أمر وقف الخسارة
-   */
-  public async placeStopLossOrder(params: {
-    symbol: string;
-    side: 'BUY' | 'SELL';
-    quantity: number;
-    stopPrice: number;
-    limitPrice?: number;
-  }): Promise<PaperTradeOrder> {
-    const order = await this.placeOrder({
-      symbol: params.symbol,
-      side: params.side,
-      type: 'LIMIT',
-      quantity: params.quantity,
-      price: params.limitPrice || params.stopPrice
-    });
-    
-    // في تطبيق حقيقي، نحتاج لمراقبة السعر وتنفيذ الأمر عند الوصول لـ stopPrice
-    return order;
   }
 
   /**
@@ -547,6 +755,8 @@ export class PaperTradingService {
       avgLoss: number;
       profitFactor: number;
       sharpeRatio: number;
+      avgLatency: number;
+      avgSlippage: number;
     };
     risk: {
       currentDrawdown: number;
@@ -554,17 +764,29 @@ export class PaperTradingService {
       dailyPnL: number;
       riskScore: number;
     };
+    execution: {
+      totalFills: number;
+      partialFills: number;
+      rejectedOrders: number;
+      avgFillRate: number;
+    };
   } {
-    const winningOrders = this.orderHistory.filter(order => 
-      order.status === 'FILLED' && this.calculateOrderProfit(order) > 0
+    const filledOrders = this.orderHistory.filter(order => 
+      order.status === 'FILLED' || order.status === 'PARTIALLY_FILLED'
     );
     
-    const losingOrders = this.orderHistory.filter(order => 
-      order.status === 'FILLED' && this.calculateOrderProfit(order) < 0
-    );
+    const winningOrders = filledOrders.filter(order => {
+      const profit = this.calculateOrderProfit(order);
+      return profit > 0;
+    });
     
-    const winRate = this.account.totalTrades > 0 
-      ? (this.account.winningTrades / this.account.totalTrades) * 100 
+    const losingOrders = filledOrders.filter(order => {
+      const profit = this.calculateOrderProfit(order);
+      return profit < 0;
+    });
+    
+    const winRate = filledOrders.length > 0 
+      ? (winningOrders.length / filledOrders.length) * 100 
       : 0;
     
     const avgProfit = winningOrders.length > 0
@@ -578,6 +800,23 @@ export class PaperTradingService {
     const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
     const sharpeRatio = this.calculateSharpeRatio();
     
+    // إحصائيات الأداء
+    const avgLatency = filledOrders.length > 0
+      ? filledOrders.reduce((sum, order) => sum + (order.latency || 0), 0) / filledOrders.length
+      : 0;
+    
+    const avgSlippage = filledOrders.length > 0
+      ? filledOrders.reduce((sum, order) => sum + (order.slippage || 0), 0) / filledOrders.length
+      : 0;
+
+    // إحصائيات التنفيذ
+    const totalFills = filledOrders.reduce((sum, order) => sum + order.fills.length, 0);
+    const partialFills = this.orderHistory.filter(order => order.status === 'PARTIALLY_FILLED').length;
+    const rejectedOrders = this.orderHistory.filter(order => order.status === 'REJECTED').length;
+    const avgFillRate = this.orderHistory.length > 0
+      ? filledOrders.length / this.orderHistory.length
+      : 0;
+
     const currentDrawdown = ((this.account.peakBalance - this.account.totalValue) / this.account.peakBalance) * 100;
     const riskScore = Math.max(0, 100 - currentDrawdown - (avgLoss * 10));
 
@@ -588,13 +827,21 @@ export class PaperTradingService {
         avgProfit,
         avgLoss,
         profitFactor,
-        sharpeRatio
+        sharpeRatio,
+        avgLatency,
+        avgSlippage: avgSlippage * 100 // تحويل إلى نسبة مئوية
       },
       risk: {
         currentDrawdown,
         maxDrawdown: this.account.maxDrawdown,
         dailyPnL: this.account.dailyPnL,
         riskScore
+      },
+      execution: {
+        totalFills,
+        partialFills,
+        rejectedOrders,
+        avgFillRate: avgFillRate * 100
       }
     };
   }
@@ -605,7 +852,15 @@ export class PaperTradingService {
   private calculateOrderProfit(order: PaperTradeOrder): number {
     if (!order.executedPrice || !order.executedQuantity) return 0;
     
-    // هذا تبسيط - في تطبيق حقيقي نحتاج لتتبع أسعار الشراء/البيع
+    const baseAsset = this.getBaseAsset(order.symbol);
+    
+    if (order.side === 'SELL') {
+      const avgBuyPrice = this.getAverageBuyPrice(baseAsset);
+      if (avgBuyPrice > 0) {
+        return (order.executedPrice - avgBuyPrice) * order.executedQuantity - (order.fees || 0);
+      }
+    }
+    
     return 0;
   }
 
@@ -613,9 +868,32 @@ export class PaperTradingService {
    * حساب نسبة شارب
    */
   private calculateSharpeRatio(): number {
-    // تبسيط لحساب نسبة شارب
-    if (this.account.maxDrawdown === 0) return 0;
-    return this.account.realizedPnL / this.account.maxDrawdown;
+    const returns = this.orderHistory
+      .filter(order => order.status === 'FILLED')
+      .map(order => this.calculateOrderProfit(order));
+    
+    if (returns.length < 2) return 0;
+    
+    const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / returns.length;
+    const stdDev = Math.sqrt(variance);
+    
+    return stdDev > 0 ? avgReturn / stdDev : 0;
+  }
+
+  /**
+   * تحديث إعدادات المحاكاة
+   */
+  public updateConfig(newConfig: Partial<PaperTradingConfig>): void {
+    this.config = { ...this.config, ...newConfig };
+    console.log('[PAPER TRADING] Configuration updated:', this.config);
+  }
+
+  /**
+   * الحصول على إعدادات المحاكاة الحالية
+   */
+  public getConfig(): PaperTradingConfig {
+    return { ...this.config };
   }
 
   /**
@@ -645,7 +923,6 @@ export class PaperTradingService {
     
     this.openOrders.clear();
     this.orderHistory = [];
-    this.initializeMarketData();
     
     console.log('[PAPER TRADING] Account reset to initial state');
   }
@@ -658,5 +935,53 @@ export class PaperTradingService {
       clearInterval(this.priceUpdateInterval);
       this.priceUpdateInterval = null;
     }
+  }
+
+  /**
+   * الحصول على معلومات order book لرمز محدد
+   */
+  public getOrderBookInfo(symbol: string): {
+    bestBid: number;
+    bestAsk: number;
+    spread: number;
+    bidDepth: number;
+    askDepth: number;
+    lastUpdate: number;
+  } | null {
+    const marketData = this.marketData.get(symbol);
+    if (!marketData) return null;
+
+    const bidDepth = marketData.orderBook.bids.reduce((sum, bid) => sum + bid.quantity, 0);
+    const askDepth = marketData.orderBook.asks.reduce((sum, ask) => sum + ask.quantity, 0);
+
+    return {
+      bestBid: marketData.bid,
+      bestAsk: marketData.ask,
+      spread: marketData.spread,
+      bidDepth,
+      askDepth,
+      lastUpdate: marketData.lastUpdate
+    };
+  }
+
+  /**
+   * محاكاة أمر وقف الخسارة
+   */
+  public async placeStopLossOrder(params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    stopPrice: number;
+    limitPrice?: number;
+  }): Promise<PaperTradeOrder> {
+    const order = await this.placeOrder({
+      symbol: params.symbol,
+      side: params.side,
+      type: 'LIMIT',
+      quantity: params.quantity,
+      price: params.limitPrice || params.stopPrice
+    });
+    
+    return order;
   }
 }

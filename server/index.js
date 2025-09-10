@@ -228,10 +228,8 @@ app.get('/api/klines', async (req, res) => {
       });
     }
 
-    // استدعاء Binance API مباشرة للبيانات العامة
-    const binanceUrl = isDryRun 
-      ? `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`
-      : `${process.env.BINANCE_BASE_URL}/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`;
+    // استدعاء Binance API للبيانات الحقيقية
+    const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit || 100}`;
     
     const fetch = (await import('node-fetch')).default;
     
@@ -267,6 +265,107 @@ app.get('/api/klines', async (req, res) => {
     
   } catch (error) {
     console.error('Error fetching klines:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// الحصول على عمق السوق (Order Book)
+app.get('/api/depth', async (req, res) => {
+  try {
+    const { symbol, limit } = req.query;
+    
+    if (!symbol) {
+      return res.status(400).json({
+        success: false,
+        error: 'Symbol is required'
+      });
+    }
+
+    // استدعاء Binance API للحصول على Order Book
+    const binanceUrl = `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=${limit || 100}`;
+    
+    const fetch = (await import('node-fetch')).default;
+    
+    const response = await retryFetch(binanceUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Ellen-Bot/1.0'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Binance API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    // تحويل البيانات إلى تنسيق مناسب
+    const orderBook = {
+      lastUpdateId: data.lastUpdateId,
+      bids: data.bids.map(bid => ({
+        price: parseFloat(bid[0]),
+        quantity: parseFloat(bid[1])
+      })),
+      asks: data.asks.map(ask => ({
+        price: parseFloat(ask[0]),
+        quantity: parseFloat(ask[1])
+      })),
+      timestamp: Date.now()
+    };
+    
+    res.json({
+      success: true,
+      data: orderBook,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching order book:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// الحصول على أسعار السوق الحالية
+app.get('/api/ticker/price', async (req, res) => {
+  try {
+    const { symbol } = req.query;
+    
+    let binanceUrl;
+    if (symbol) {
+      binanceUrl = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+    } else {
+      binanceUrl = 'https://api.binance.com/api/v3/ticker/price';
+    }
+    
+    const fetch = (await import('node-fetch')).default;
+    
+    const response = await retryFetch(binanceUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Ellen-Bot/1.0'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Binance API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    res.json({
+      success: true,
+      data,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error fetching ticker price:', error);
     res.status(500).json({
       success: false,
       error: error.message
