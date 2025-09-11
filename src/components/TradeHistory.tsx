@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Calendar, Filter, Download, TrendingUp, TrendingDown } from 'lucide-react';
+import { PaperTradingService } from '../services/PaperTradingService';
 
 interface HistoricalTrade {
   id: string;
