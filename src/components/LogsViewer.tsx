@@ -17,7 +17,7 @@ export const LogsViewer: React.FC = () => {
   useEffect(() => {
     loadLogs();
     loadStatistics();
-  }, [activeTab, logType, filters]);
+  }, [activeTab, filters]);
 
   const loadLogs = async () => {
     setLoading(true);
