@@ -1,4 +1,5 @@
 import { CandleData } from '../utils/TechnicalAnalysis';
+import { TradeRecord } from '../services/BacktestingService';
 import { TrendFollowingStrategy, TrendSignal } from './TrendFollowing';
 import { MeanReversionStrategy, MeanReversionSignal } from './MeanReversion';
 import { GridDCAStrategy, GridDCASignal } from './GridDCA';
@@ -445,12 +446,14 @@ export class HybridTradingManager {
     maxDrawdown: number;
     strategyDistribution: Record<string, number>;
     sharpeRatio: number;
+    trades: TradeRecord[];
   } {
     let totalTrades = 0;
     let winningTrades = 0;
     let totalReturn = 0;
     let maxDrawdown = 0;
     let peak = 1000;
+    const trades: TradeRecord[] = [];
     
     const strategyUsage: Record<string, number> = {
       TREND_FOLLOWING: 0,
@@ -485,11 +488,14 @@ export class HybridTradingManager {
         totalTrades++;
         
         // محاكاة تنفيذ الصفقة
-        const mockReturn = this.simulateTradeExecution(signal, historicalData.slice(i));
-        totalReturn += mockReturn;
-        this.recordTrade(mockReturn);
+        const tradeResult = this.simulateTradeExecution(signal, historicalData.slice(i));
+        if (tradeResult) {
+          trades.push(tradeResult);
+          totalReturn += tradeResult.profit;
+          this.recordTrade(tradeResult.profit);
         
-        if (mockReturn > 0) winningTrades++;
+          if (tradeResult.profit > 0) winningTrades++;
+        }
 
         // حساب drawdown
         if (this.accountBalance > peak) peak = this.accountBalance;
@@ -520,11 +526,14 @@ export class HybridTradingManager {
       totalReturn: totalReturn * 100,
       maxDrawdown,
       strategyDistribution,
-      sharpeRatio
+      sharpeRatio,
+      trades
     };
   }
 
-  private simulateTradeExecution(signal: HybridSignal, futureData: CandleData[]): number {
+  private simulateTradeExecution(signal: HybridSignal, futureData: CandleData[]): TradeRecord | null {
+    if (futureData.length === 0) return null;
+    
     // محاكاة مبسطة لتنفيذ الصفقة
     const entryPrice = signal.entryPrice;
     const quantity = signal.quantity;
@@ -535,34 +544,72 @@ export class HybridTradingManager {
       ? entryPrice * (1 + slippage)
       : entryPrice * (1 - slippage);
 
+    let exitPrice = actualEntryPrice;
+    let holdTime = 0;
+    let exitReason = 'timeout';
     // البحث عن نقطة خروج
     for (let i = 0; i < Math.min(futureData.length, 50); i++) {
       const currentPrice = futureData[i].close;
+      holdTime = i;
       
       // فحص أهداف الخروج
       if (signal.action === 'BUY') {
         if (currentPrice >= signal.takeProfit) {
-          return (signal.takeProfit - actualEntryPrice) * quantity * 0.98; // خصم الرسوم
+          exitPrice = signal.takeProfit;
+          exitReason = 'take_profit';
+          break;
         }
         if (currentPrice <= signal.stopLoss) {
-          return (signal.stopLoss - actualEntryPrice) * quantity * 0.98;
+          exitPrice = signal.stopLoss;
+          exitReason = 'stop_loss';
+          break;
         }
       } else if (signal.action === 'SELL') {
         if (currentPrice <= signal.takeProfit) {
-          return (actualEntryPrice - signal.takeProfit) * quantity * 0.98;
+          exitPrice = signal.takeProfit;
+          exitReason = 'take_profit';
+          break;
         }
         if (currentPrice >= signal.stopLoss) {
-          return (actualEntryPrice - signal.stopLoss) * quantity * 0.98;
+          exitPrice = signal.stopLoss;
+          exitReason = 'stop_loss';
+          break;
         }
       }
     }
 
-    // خروج بالسعر الحالي إذا لم تتحقق الأهداف
-    const exitPrice = futureData[Math.min(futureData.length - 1, 20)].close;
+    // خروج بالسعر الحالي إذا لم تتحقق الأهداف ولم يتم تحديد سعر خروج
+    if (exitPrice === actualEntryPrice && futureData.length > 20) {
+      exitPrice = futureData[20].close;
+      holdTime = 20;
+      exitReason = 'timeout';
+    }
+    
     const tradeReturn = signal.action === 'BUY' 
       ? (exitPrice - actualEntryPrice) * quantity * 0.98
       : (actualEntryPrice - exitPrice) * quantity * 0.98;
 
-    return tradeReturn;
+    const fees = (actualEntryPrice + exitPrice) * quantity * 0.001; // 0.1% fees
+    const netProfit = tradeReturn - fees;
+    const profitPercent = (netProfit / (actualEntryPrice * quantity)) * 100;
+
+    return {
+      id: `trade_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      strategy: signal.strategy,
+      symbol: 'BTCUSDT',
+      side: signal.action as 'BUY' | 'SELL',
+      entryTime: new Date(),
+      exitTime: new Date(Date.now() + holdTime * 60000), // assuming 1-minute candles
+      entryPrice: actualEntryPrice,
+      exitPrice,
+      quantity,
+      profit: netProfit,
+      profitPercent,
+      fees,
+      slippage: Math.abs(actualEntryPrice - entryPrice),
+      holdTime,
+      reason: exitReason,
+      confidence: signal.confidence
+    };
   }
 }
