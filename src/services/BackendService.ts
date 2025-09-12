@@ -50,18 +50,18 @@ export class BackendService {
   constructor() {
     this.config = {
       baseUrl: import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001/api',
-      timeout: 10000,
-      retryAttempts: 3,
+      timeout: Number(import.meta.env.VITE_BACKEND_TIMEOUT) || 10000,
+      retryAttempts: Number(import.meta.env.VITE_BACKEND_RETRIES) || 3,
       frontendToken: import.meta.env.VITE_FRONTEND_TOKEN || 'ellen-bot-secure-token'
     };
-    
-    // إنشاء fetch مع retry logic
+
+    // إنشاء fetch مع retry logic (RetryService يجب أن يوفر createRetryFetch)
     this.retryFetch = RetryService.createRetryFetch({
       maxAttempts: this.config.retryAttempts,
       baseDelay: 1000,
       maxDelay: 30000
     });
-    
+
     this.initializeAuth();
   }
 
@@ -69,9 +69,14 @@ export class BackendService {
    * تهيئة المصادقة من localStorage
    */
   private initializeAuth(): void {
-    const token = localStorage.getItem('ellen_auth_token');
-    if (token) {
-      this.authToken = token;
+    try {
+      const token = localStorage.getItem('ellen_auth_token');
+      if (token) {
+        this.authToken = token;
+      }
+    } catch (e) {
+      // في بيئات preview قد لا يكون localStorage متاحًا بنفس الطريقة
+      console.warn('[BackendService] unable to read localStorage for auth token', e);
     }
   }
 
@@ -87,7 +92,7 @@ export class BackendService {
 
       if (result.success && result.data?.token) {
         this.authToken = result.data.token;
-        localStorage.setItem('ellen_auth_token', this.authToken);
+        try { localStorage.setItem('ellen_auth_token', this.authToken); } catch {}
         return true;
       }
       return false;
@@ -102,7 +107,7 @@ export class BackendService {
    */
   async getMarketData(symbol: string): Promise<any> {
     const result = await this.makeSecureRequest(`/market/ticker/${symbol}`);
-    return result.data;
+    return result.data ?? null;
   }
 
   /**
@@ -151,7 +156,7 @@ export class BackendService {
         method: 'GET',
         params: symbol ? { symbol } : undefined
       });
-      return result.data;
+      return result.data ?? null;
     } catch (error) {
       console.error('Failed to fetch current prices:', error);
       return null;
@@ -222,7 +227,7 @@ export class BackendService {
         'Authorization': `Bearer ${this.authToken}`
       }
     });
-    return result.data;
+    return result.data ?? null;
   }
 
   /**
@@ -296,7 +301,7 @@ export class BackendService {
         method: 'POST',
         body: JSON.stringify(keys)
       });
-      
+
       return {
         success: result.success,
         validated: result.data?.validated || false,
@@ -340,9 +345,9 @@ export class BackendService {
         testnet: boolean;
         permissions: string[];
       }>('/binance/connection-status');
-      
+
       return {
-        connected: result.success && result.data?.connected || false,
+        connected: (result.success && !!result.data?.connected) || false,
         testnet: result.data?.testnet || false,
         permissions: result.data?.permissions || [],
         error: result.error
@@ -355,11 +360,12 @@ export class BackendService {
       };
     }
   }
+
   /**
    * دالة محسنة لإجراء طلبات HTTP آمنة مع retry logic
    */
   private async makeSecureRequest<T>(
-    endpoint: string, 
+    endpoint: string,
     options: {
       method?: string;
       body?: string;
@@ -368,7 +374,7 @@ export class BackendService {
     } = {}
   ): Promise<ApiResponse<T>> {
     const { method = 'GET', body, headers = {}, params } = options;
-    
+
     // بناء URL مع المعاملات
     let url = `${this.config.baseUrl}${endpoint}`;
     if (params) {
@@ -377,7 +383,7 @@ export class BackendService {
     }
 
     // إعداد headers آمنة
-    const defaultHeaders = {
+    const defaultHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'X-Frontend-Token': this.config.frontendToken,
@@ -385,7 +391,14 @@ export class BackendService {
       ...headers
     };
 
-    // استخدام RetryService للطلبات الآمنة
+    // helper لبناء أخطاء مفهومة
+    const wrapError = (message: string, info: Record<string, any> = {}) => {
+      const err: any = new Error(message);
+      Object.assign(err, info);
+      return err;
+    };
+
+    // تنفيذ الطلب مع RetryService (الذي يستخدم this.retryFetch)
     const retryResult: RetryResult<ApiResponse<T>> = await RetryService.executeWithRetry(
       async () => {
         const controller = new AbortController();
@@ -400,11 +413,80 @@ export class BackendService {
           });
 
           clearTimeout(timeoutId);
-          
-          const data = await response.json();
-          return data;
-        } catch (error) {
+
+          if (!response) {
+            throw wrapError('No response object from fetch', { url });
+          }
+
+          // تحقق من نوع الاستجابة — بعض البيئات (preview) قد تعطي opaque response
+          const respType = (response as any).type;
+          if (respType && respType !== 'basic' && respType !== 'cors') {
+            // غالبًا دلالة على CORS / credentialless iframe
+            throw wrapError('Opaque or unsupported response type (possible CORS/credentialless issue)', {
+              url, respType, status: response.status
+            });
+          }
+
+          // حالات الاستجابة غير الناجحة
+          if (!response.ok) {
+            let text = '';
+            try { text = await response.text(); } catch (e) { /* ignore */ }
+
+            const status = response.status || 0;
+            const nonRetryable = status >= 400 && status < 500 && status !== 429;
+            if (nonRetryable) {
+              throw wrapError(`NonRetryable HTTP ${status}: ${text || response.statusText}`, { status, text });
+            } else {
+              throw wrapError(`Retryable HTTP ${status}: ${text || response.statusText}`, { status, text });
+            }
+          }
+
+          // تحقق من content-type قبل محاول parse JSON
+          const contentType = response.headers.get?.('content-type') || '';
+          if (!contentType.includes('application/json')) {
+            let txt = '';
+            try { txt = await response.text(); } catch (e) { /* ignore */ }
+            // نرجع ApiResponse مبسط مع نص إن لم يكن JSON
+            return {
+              success: true,
+              data: (txt as unknown) as T,
+              timestamp: new Date().toISOString()
+            };
+          }
+
+          // parse JSON بأمان
+          let parsed: any;
+          try {
+            parsed = await response.json();
+          } catch (e) {
+            throw wrapError('Failed to parse JSON from response', { url, err: (e as Error).message });
+          }
+
+          // إذا لم يكن شكل ApiResponse المتفق عليه، غلفه
+          if (!parsed || typeof parsed !== 'object' || !('success' in parsed)) {
+            return {
+              success: true,
+              data: parsed as T,
+              timestamp: new Date().toISOString()
+            };
+          }
+
+          return parsed as ApiResponse<T>;
+        } catch (error: any) {
           clearTimeout(timeoutId);
+
+          // Abort => timeout (قابل لإعادة المحاولة)
+          if (error?.name === 'AbortError') {
+            throw wrapError('Request aborted (timeout)', { url, cause: 'timeout' });
+          }
+
+          // كشف خطأ fetch منخفض المستوى
+          if (error?.message && error.message.includes('Failed to fetch')) {
+            console.error('[makeSecureRequest] Low-level fetch failure', { url, error });
+            throw wrapError('Network or CORS error: Failed to fetch', { url, original: error });
+          }
+
+          // رمي الخطأ كما هو إذا لم نعرف كيف نتعامل معه هنا
           throw error;
         }
       },
@@ -417,10 +499,9 @@ export class BackendService {
 
     if (!retryResult.success) {
       console.error(`[BACKEND] Request failed after ${retryResult.attempts} attempts:`, retryResult.error);
-      throw retryResult.error;
+      throw retryResult.error ?? new Error('Unknown retry failure');
     }
 
-    // تسجيل الطلبات الناجحة مع معلومات الأداء
     if (retryResult.attempts > 1 || retryResult.wasRateLimited) {
       console.warn(
         `[BACKEND] Request succeeded after ${retryResult.attempts} attempts ` +
@@ -428,14 +509,15 @@ export class BackendService {
       );
     }
 
-    return retryResult.data!;
+    const data = retryResult.data ?? { success: false, timestamp: new Date().toISOString() } as ApiResponse<T>;
+    return data as ApiResponse<T>;
   }
 
   /**
    * توليد معرف طلب فريد
    */
   private generateRequestId(): string {
-    return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `req_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
   }
 
   /**
@@ -448,11 +530,11 @@ export class BackendService {
     error?: string;
   }> {
     const startTime = Date.now();
-    
+
     try {
       const result = await this.makeSecureRequest('/health');
       const latency = Date.now() - startTime;
-      
+
       return {
         connected: result.success,
         latency,
@@ -472,7 +554,7 @@ export class BackendService {
    */
   logout(): void {
     this.authToken = null;
-    localStorage.removeItem('ellen_auth_token');
+    try { localStorage.removeItem('ellen_auth_token'); } catch {}
   }
 
   /**
