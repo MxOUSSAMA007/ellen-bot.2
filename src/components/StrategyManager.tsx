@@ -99,18 +99,12 @@ export const StrategyManager: React.FC = () => {
   };
 
   const runBacktest = async () => {
-    const backtestingService = new BacktestingService({
+    const historicalData = TestingUtils.generateMockCandleData(1000);
+    const results = hybridManager.backtest(historicalData, {
       initialBalance: 10000,
       commission: 0.001,
       slippage: 0.0005
     });
-    
-    const historicalData = TestingUtils.generateMockCandleData(1000);
-    const results = await backtestingService.runSingleBacktest(
-      'HYBRID',
-      historicalData,
-      { symbol: 'BTCUSDT' }
-    );
     setBacktestResults(results);
   };
 
