@@ -49,7 +49,7 @@ export class BackendService {
 
   constructor() {
     this.config = {
-      baseUrl: import.meta.env.VITE_BACKEND_URL || (window.location.protocol === 'https:' ? 'https://localhost:3001/api' : 'http://localhost:3001/api'),
+      baseUrl: import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001/api',
       timeout: 10000,
       retryAttempts: 3,
       frontendToken: import.meta.env.VITE_FRONTEND_TOKEN || 'ellen-bot-secure-token'

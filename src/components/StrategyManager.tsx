@@ -15,6 +15,7 @@ import {
 import { HybridTradingManager, HybridSignal, MarketCondition } from '../strategies/HybridManager';
 import { TestingUtils } from '../utils/TestingUtils';
 import { BacktestResults } from './BacktestResults';
+import { BacktestingService } from '../services/BacktestingService';
 
 export const StrategyManager: React.FC = () => {
   const [hybridManager] = useState(() => new HybridTradingManager());
@@ -98,8 +99,18 @@ export const StrategyManager: React.FC = () => {
   };
 
   const runBacktest = async () => {
+    const backtestingService = new BacktestingService({
+      initialBalance: 10000,
+      commission: 0.001,
+      slippage: 0.0005
+    });
+    
     const historicalData = TestingUtils.generateMockCandleData(1000);
-    const results = hybridManager.backtest(historicalData);
+    const results = await backtestingService.runSingleBacktest(
+      'HYBRID',
+      historicalData,
+      { symbol: 'BTCUSDT' }
+    );
     setBacktestResults(results);
   };
 
