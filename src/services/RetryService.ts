@@ -33,6 +33,13 @@ export class RetryService {
     retryableBinanceCodes: [-1003, -1006, -1007] // Rate limit codes
   };
 
+  // إحصائيات بسيطة تجمع أثناء عمل الخدمة
+  private static stats = {
+    totalRetries: 0,
+    successfulRetries: 0,
+    rateLimitHits: 0
+  };
+
   /**
    * تنفيذ عملية مع إعادة المحاولة
    */
@@ -40,15 +47,17 @@ export class RetryService {
     operation: () => Promise<T>,
     config: Partial<RetryConfig> = {}
   ): Promise<RetryResult<T>> {
-    const finalConfig = { ...this.defaultConfig, ...config };
+    const finalConfig: RetryConfig = { ...this.defaultConfig, ...config };
     const startTime = Date.now();
     let wasRateLimited = false;
-    let lastError: Error;
+    let lastError: Error | undefined;
 
     for (let attempt = 1; attempt <= finalConfig.maxAttempts; attempt++) {
       try {
         const result = await operation();
-        
+
+        if (attempt > 1) this.stats.successfulRetries++;
+
         return {
           success: true,
           data: result,
@@ -56,9 +65,11 @@ export class RetryService {
           totalTime: Date.now() - startTime,
           wasRateLimited
         };
-      } catch (error) {
-        lastError = error as Error;
-        
+      } catch (rawError) {
+        // نضمن أن لدينا كائن Error
+        const error = this.normalizeError(rawError);
+        lastError = error;
+
         // لا تعيد المحاولة للأخطاء غير القابلة للإصلاح
         if (this.isNonRetryableError(error)) {
           return {
@@ -69,28 +80,31 @@ export class RetryService {
             wasRateLimited
           };
         }
-        
-        // إذا كانت آخر محاولة، لا تنتظر
+
+        // إذا كانت آخر محاولة، اكسر وارجع الخطأ
         if (attempt === finalConfig.maxAttempts) {
           break;
         }
-        
+
         // معالجة خاصة لـ Rate Limiting
         if (this.isRateLimitError(error)) {
           wasRateLimited = true;
+          this.stats.rateLimitHits++;
           const delay = await this.handleRateLimit(error, attempt);
+          this.stats.totalRetries++;
           await this.sleep(delay);
           continue;
         }
-        
-        // حساب وقت الانتظار
+
+        // حساب وقت الانتظار مع backoff + jitter
         const delay = this.calculateDelay(attempt, finalConfig);
-        
+
         console.warn(
           `[RETRY] Attempt ${attempt}/${finalConfig.maxAttempts} failed. ` +
-          `Retrying in ${delay}ms. Error: ${error.message}`
+          `Retrying in ${Math.round(delay)}ms. Error: ${error?.message ?? String(error)}`
         );
-        
+
+        this.stats.totalRetries++;
         await this.sleep(delay);
       }
     }
@@ -108,34 +122,40 @@ export class RetryService {
    * حساب وقت التأخير مع Exponential Backoff و Jitter
    */
   private static calculateDelay(attempt: number, config: RetryConfig): number {
+    // تأكد أن jitterRange في نطاق منطقي
+    const jitterRange = Math.max(0, Math.min(1, config.jitterRange ?? 0.1));
+
     // Exponential backoff
-    let delay = config.baseDelay * Math.pow(config.backoffMultiplier, attempt - 1);
-    
+    let delay = config.baseDelay * Math.pow(config.backoffMultiplier ?? 2, attempt - 1);
+
     // تطبيق الحد الأقصى
     delay = Math.min(delay, config.maxDelay);
-    
+
     // إضافة jitter لتجنب thundering herd
-    const jitter = delay * config.jitterRange * (Math.random() * 2 - 1);
+    const jitter = delay * jitterRange * (Math.random() * 2 - 1);
     delay += jitter;
-    
-    return Math.max(delay, 0);
+
+    return Math.max(Math.round(delay), 0);
   }
 
   /**
    * معالجة خاصة لـ Rate Limiting
    */
   private static async handleRateLimit(error: any, attempt: number): Promise<number> {
-    // فحص header Retry-After من الخادم
-    const retryAfter = error.headers?.['retry-after'] || error.retryAfter;
-    
-    if (retryAfter) {
-      const delay = parseInt(retryAfter) * 1000;
-      console.warn(`[RATE_LIMIT] Server requested ${delay}ms delay`);
-      return delay;
+    // فحص header Retry-After من الخادم أو الحقل الموضوع في الخطأ
+    const retryAfterRaw = (error.headers && (error.headers['retry-after'] || error.headers['Retry-After'])) || error.retryAfter || null;
+
+    if (retryAfterRaw) {
+      const parsed = parseInt(String(retryAfterRaw), 10);
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        const delay = parsed * 1000;
+        console.warn(`[RATE_LIMIT] Server requested ${delay}ms delay via Retry-After`);
+        return delay;
+      }
     }
-    
-    // استخدام exponential backoff للـ rate limits
-    const delay = Math.min(2000 * Math.pow(2, attempt), 60000); // حد أقصى دقيقة واحدة
+
+    // استخدام exponential backoff للـ rate limits (حد دقيقة واحدة)
+    const delay = Math.min(1000 * Math.pow(2, attempt), 60000);
     console.warn(`[RATE_LIMIT] Using exponential backoff: ${delay}ms`);
     return delay;
   }
@@ -144,9 +164,14 @@ export class RetryService {
    * فحص أخطاء Rate Limiting
    */
   private static isRateLimitError(error: any): boolean {
-    return error.status === 429 || 
-           error.code === -1003 || // Binance rate limit
-           error.message?.toLowerCase().includes('rate limit');
+    const status = Number(error?.status || 0);
+    const code = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+    const message = String(error?.message || '').toLowerCase();
+
+    return status === 429 ||
+           (code !== null && this.defaultConfig.retryableBinanceCodes.includes(code)) ||
+           message.includes('rate limit') ||
+           error?.isNetworkError === true; // اعتبر بعض أخطاء الشبكة قابلة لإعادة المحاولة
   }
 
   /**
@@ -155,12 +180,13 @@ export class RetryService {
   private static isNonRetryableError(error: any): boolean {
     // أخطاء HTTP غير قابلة للإصلاح (باستثناء 429)
     const nonRetryableStatusCodes = [400, 401, 403, 404, 422];
-    
-    if (error.status && nonRetryableStatusCodes.includes(error.status)) {
+
+    const status = Number(error?.status || 0);
+    if (status && nonRetryableStatusCodes.includes(status)) {
       return true;
     }
 
-    // أخطاء Binance محددة
+    // أخطاء Binance محددة غير قابلة للإصلاح
     const nonRetryableBinanceCodes = [
       -1013, // Invalid quantity
       -1021, // Timestamp outside of recvWindow
@@ -170,7 +196,8 @@ export class RetryService {
       -1104, // Not all sent parameters were read
     ];
 
-    if (error.code && nonRetryableBinanceCodes.includes(error.code)) {
+    const code = Number.isFinite(Number(error?.code)) ? Number(error.code) : null;
+    if (code !== null && nonRetryableBinanceCodes.includes(code)) {
       return true;
     }
 
@@ -178,35 +205,81 @@ export class RetryService {
   }
 
   /**
+   * Normalize various thrown values into an Error with helpful metadata
+   */
+  private static normalizeError(raw: any): any {
+    if (!raw) {
+      const e: any = new Error('Unknown error');
+      return e;
+    }
+    if (raw instanceof Error) {
+      return raw;
+    }
+    // fetch() low-level network errors in browsers are usually TypeError with message 'Failed to fetch'
+    // نغلفها بحيث تحتوي على status=0 و isNetworkError=true
+    if (typeof raw === 'object' && String(raw.message).toLowerCase().includes('failed to fetch')) {
+      const e: any = new Error(raw.message || 'Network error: Failed to fetch');
+      e.status = 0;
+      e.isNetworkError = true;
+      e.original = raw;
+      return e;
+    }
+    // إذا هو كائن JSON الممثل لخطأ
+    const e: any = new Error(raw.message || String(raw));
+    if (raw.status) e.status = raw.status;
+    if (raw.code) e.code = raw.code;
+    if (raw.retryAfter) e.retryAfter = raw.retryAfter;
+    if (raw.headers) e.headers = raw.headers;
+    e.original = raw;
+    return e;
+  }
+
+  /**
    * إنشاء wrapper محسن للـ fetch مع retry
    */
   public static createRetryFetch(config?: Partial<RetryConfig>) {
+    const mergedConfig = { ...this.defaultConfig, ...(config || {}) };
     return async (url: string, options?: RequestInit): Promise<Response> => {
-      const result = await this.executeWithRetry(
+      const result = await this.executeWithRetry<Response>(
         async () => {
-          const response = await fetch(url, options);
-          
+          let response: Response;
+          try {
+            response = await fetch(url, options);
+          } catch (rawErr) {
+            // تحويل أخطاء الشبكة إلى شكل موحّد
+            throw this.normalizeError(rawErr);
+          }
+
           // فحص Rate Limiting
           if (response.status === 429) {
-            const retryAfter = response.headers.get('Retry-After');
-            const error = new Error('Rate limited') as any;
+            const retryAfter = response.headers.get('Retry-After') || response.headers.get('retry-after');
+            const error: any = new Error('Rate limited');
             error.status = 429;
             error.retryAfter = retryAfter;
+            error.headers = { 'retry-after': retryAfter };
             throw error;
           }
-          
-          // فحص أخطاء Binance
+
+          // فحص أخطاء (حاول قراءة JSON بأمان إن كان موجودًا)
           if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            const error = new Error(errorData.msg || response.statusText) as any;
+            let errorData: any = {};
+            try {
+              errorData = await response.json();
+            } catch (e) {
+              // لا تحمل الخطأ هنا - سنستخدم status/statusText
+            }
+            const error: any = new Error(errorData?.msg || response.statusText || `HTTP ${response.status}`);
             error.status = response.status;
-            error.code = errorData.code;
+            if (errorData && typeof errorData.code !== 'undefined') {
+              error.code = errorData.code;
+            }
+            error.headers = Object.fromEntries(response.headers.entries());
             throw error;
           }
-          
+
           return response;
         },
-        config
+        mergedConfig
       );
 
       if (!result.success) {
@@ -227,16 +300,7 @@ export class RetryService {
   /**
    * إحصائيات إعادة المحاولة
    */
-  public static getRetryStats(): {
-    totalRetries: number;
-    successfulRetries: number;
-    rateLimitHits: number;
-  } {
-    // في تطبيق حقيقي، هذه ستكون متغيرات instance
-    return {
-      totalRetries: 0,
-      successfulRetries: 0,
-      rateLimitHits: 0
-    };
+  public static getRetryStats() {
+    return { ...this.stats };
   }
 }
