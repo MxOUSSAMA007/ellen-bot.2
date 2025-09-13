@@ -167,15 +167,40 @@ export class BackendService {
    * إرسال أمر تداول (آمن - يتم عبر الخادم)
    */
   async placeOrder(orderRequest: OrderRequest): Promise<any> {
-    if (!this.authToken) {
-      throw new Error('Authentication required for trading operations');
+    // في وضع DRY_RUN، نحاكي الأمر محلياً
+    const isDryRun = import.meta.env.VITE_DRY_RUN === 'true';
+    
+    if (isDryRun) {
+      // محاكاة تأخير الشبكة
+      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
+      
+      // محاكاة نجاح الأمر
+      const mockResult = {
+        success: true,
+        data: {
+          orderId: `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          symbol: orderRequest.symbol,
+          side: orderRequest.side,
+          type: orderRequest.type,
+          quantity: orderRequest.quantity,
+          price: orderRequest.price,
+          status: 'FILLED',
+          executedQty: orderRequest.quantity,
+          executedPrice: orderRequest.price || (Math.random() * 50000 + 30000),
+          timestamp: Date.now()
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      console.log('[DRY_RUN] Simulated order execution:', mockResult);
+      return mockResult;
     }
 
     return this.makeSecureRequest('/order', {
       method: 'POST',
       body: JSON.stringify(orderRequest),
       headers: {
-        'Authorization': `Bearer ${this.authToken}`
+        ...(this.authToken ? { 'Authorization': `Bearer ${this.authToken}` } : {})
       }
     });
   }

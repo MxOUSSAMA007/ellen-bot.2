@@ -10,12 +10,13 @@ import {
   Pause,
   AlertTriangle,
   CheckCircle,
-  Activity
+  Activity,
+  TrendingDown
 } from 'lucide-react';
 import { HybridTradingManager, HybridSignal, MarketCondition } from '../strategies/HybridManager';
 import { TestingUtils } from '../utils/TestingUtils';
 import { BacktestResults } from './BacktestResults';
-import { BacktestingService } from '../services/BacktestingService';
+import { backendService } from '../services/BackendService';
 
 export const StrategyManager: React.FC = () => {
   const [hybridManager] = useState(() => new HybridTradingManager());
