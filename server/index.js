@@ -5,6 +5,7 @@ const path = require('path');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
+const MigrationManager = require('./utils/migrations');
 require('dotenv').config();
 
 const app = express();
@@ -44,60 +45,19 @@ const limiter = rateLimit({
 });
 
 app.use('/api/', limiter);
-// إعداد قاعدة البيانات
+
+// إعداد قاعدة البيانات مع نظام الترحيل
 const dbPath = path.join(__dirname, 'logs', 'ellen-bot.db');
 const db = new sqlite3.Database(dbPath);
 
-// إنشاء جداول السجلات
+// تطبيق الترحيلات
 db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS trade_logs (
-    id TEXT PRIMARY KEY,
-    symbol TEXT NOT NULL,
-    action TEXT NOT NULL,
-    price REAL,
-    size REAL,
-    reason TEXT,
-    confidence REAL,
-    timestamp TEXT NOT NULL,
-    strategy TEXT,
-    is_dry_run BOOLEAN DEFAULT 1,
-    order_id TEXT,
-    executed_price REAL,
-    executed_size REAL,
-    fees REAL,
-    status TEXT DEFAULT 'PENDING'
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS decision_logs (
-    id TEXT PRIMARY KEY,
-    symbol TEXT NOT NULL,
-    strategy TEXT NOT NULL,
-    market_condition TEXT,
-    indicators TEXT,
-    decision TEXT NOT NULL,
-    confidence REAL,
-    reasons TEXT,
-    timestamp TEXT NOT NULL,
-    processing_time REAL
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS risk_logs (
-    id TEXT PRIMARY KEY,
-    action TEXT NOT NULL,
-    current_drawdown REAL,
-    daily_loss REAL,
-    position_size REAL,
-    risk_level TEXT,
-    approved BOOLEAN,
-    reason TEXT,
-    timestamp TEXT NOT NULL
-  )`);
-
-  // إضافة فهارس للأداء
-  db.run(`CREATE INDEX IF NOT EXISTS idx_trade_logs_symbol ON trade_logs(symbol)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_trade_logs_timestamp ON trade_logs(timestamp)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_decision_logs_strategy ON decision_logs(strategy)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_risk_logs_timestamp ON risk_logs(timestamp)`);
+  // تطبيق الترحيلات تلقائياً
+  const migrationManager = new MigrationManager(db);
+  migrationManager.applyMigrations().catch(error => {
+    console.error('[DATABASE] Migration failed:', error);
+    process.exit(1);
+  });
 });
 
 // Middleware
@@ -838,50 +798,324 @@ app.get('/api/stats', async (req, res) => {
 app.get('/api/logs/:type', async (req, res) => {
   try {
     const { type } = req.params;
-    const { limit = 100, symbol, strategy } = req.query;
+    const { limit = 100, offset = 0, symbol, strategy, level, source, startDate, endDate } = req.query;
     
     let query;
-    let params = [limit];
+    let params = [];
+    let whereConditions = [];
     
     switch (type) {
       case 'trades':
         query = 'SELECT * FROM trade_logs';
         if (symbol) {
-          query += ' WHERE symbol = ?';
-          params.unshift(symbol);
+          whereConditions.push('symbol = ?');
+          params.push(symbol);
         }
-        query += ' ORDER BY timestamp DESC LIMIT ?';
+        if (strategy) {
+          whereConditions.push('strategy = ?');
+          params.push(strategy);
+        }
         break;
         
       case 'decisions':
         query = 'SELECT * FROM decision_logs';
         if (strategy) {
-          query += ' WHERE strategy = ?';
-          params.unshift(strategy);
+          whereConditions.push('strategy = ?');
+          params.push(strategy);
         }
-        query += ' ORDER BY timestamp DESC LIMIT ?';
+        if (symbol) {
+          whereConditions.push('symbol = ?');
+          params.push(symbol);
+        }
         break;
         
       case 'risk':
-        query = 'SELECT * FROM risk_logs ORDER BY timestamp DESC LIMIT ?';
+        query = 'SELECT * FROM risk_logs';
+        break;
+        
+      case 'system':
+        query = 'SELECT * FROM system_logs';
+        if (level) {
+          whereConditions.push('level = ?');
+          params.push(level);
+        }
+        if (source) {
+          whereConditions.push('source = ?');
+          params.push(source);
+        }
         break;
         
       default:
         return res.status(400).json({
           success: false,
-          error: 'Invalid log type'
+          error: 'Invalid log type. Use: trades, decisions, risk, or system'
         });
     }
+    
+    // إضافة شروط التاريخ
+    if (startDate) {
+      whereConditions.push('timestamp >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      whereConditions.push('timestamp <= ?');
+      params.push(endDate);
+    }
+    
+    // بناء الاستعلام النهائي
+    if (whereConditions.length > 0) {
+      query += ' WHERE ' + whereConditions.join(' AND ');
+    }
+    
+    query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
     
     db.all(query, params, (err, rows) => {
       if (err) {
         console.error('Database error:', err);
         return res.status(500).json({
           success: false,
-          error: 'Database error'
+          error: 'Database error',
+          timestamp: new Date().toISOString()
         });
       }
       
+      // حساب العدد الإجمالي للـ pagination
+      let countQuery = query.replace(/SELECT \*/, 'SELECT COUNT(*) as total')
+                           .replace(/ORDER BY.*$/, '');
+      const countParams = params.slice(0, -2); // إزالة LIMIT و OFFSET
+      
+      db.get(countQuery, countParams, (countErr, countRow) => {
+        if (countErr) {
+          console.error('Count query error:', countErr);
+        }
+        
+        res.json({
+          success: true,
+          data: rows || [],
+          pagination: {
+            total: countRow?.total || 0,
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            hasMore: (countRow?.total || 0) > parseInt(offset) + parseInt(limit)
+          },
+          timestamp: new Date().toISOString()
+        });
+      });
+    });
+    
+  } catch (error) {
+    console.error('Error fetching logs:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// تسجيل سجل نظام عام
+app.post('/api/logs/system', async (req, res) => {
+  try {
+    const { level, type, message, source, metadata } = req.body;
+    
+    if (!level || !type || !message || !source) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: level, type, message, source',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const logEntry = {
+      id: generateLogId(),
+      level: level.toUpperCase(),
+      type: type.toUpperCase(),
+      message,
+      source: source.toUpperCase(),
+      timestamp: new Date().toISOString(),
+      metadata: metadata ? JSON.stringify(metadata) : null
+    };
+    
+    await logSystemEvent(logEntry);
+    
+    res.json({
+      success: true,
+      data: { logId: logEntry.id },
+      timestamp: logEntry.timestamp
+    });
+    
+  } catch (error) {
+    console.error('Error logging system event:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// تنظيف السجلات القديمة
+app.post('/api/logs/cleanup', async (req, res) => {
+  try {
+    const { daysToKeep = 30, logType } = req.body;
+    
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+    const cutoffTimestamp = cutoffDate.toISOString();
+    
+    let deletedCount = 0;
+    
+    if (logType && logType !== 'all') {
+      // تنظيف نوع محدد من السجلات
+      const tableName = `${logType}_logs`;
+      const result = await deleteOldLogs(tableName, cutoffTimestamp);
+      deletedCount = result;
+    } else {
+      // تنظيف جميع أنواع السجلات
+      const tables = ['trade_logs', 'decision_logs', 'risk_logs', 'system_logs'];
+      for (const table of tables) {
+        const result = await deleteOldLogs(table, cutoffTimestamp);
+        deletedCount += result;
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        deletedCount,
+        cutoffDate: cutoffTimestamp
+      },
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error cleaning up logs:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// الحصول على إحصائيات مفصلة للسجلات
+app.get('/api/logs/stats', async (req, res) => {
+  try {
+    const stats = await getDetailedLogStats();
+    
+    res.json({
+      success: true,
+      data: stats,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Error getting log stats:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// دالة تنظيف السجلات القديمة
+async function deleteOldLogs(tableName, cutoffTimestamp) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `DELETE FROM ${tableName} WHERE timestamp < ?`,
+      [cutoffTimestamp],
+      function(err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this.changes || 0);
+        }
+      }
+    );
+  });
+}
+
+// دالة الحصول على إحصائيات مفصلة
+async function getDetailedLogStats() {
+  const queries = [
+    'SELECT COUNT(*) as count, "trades" as type FROM trade_logs',
+    'SELECT COUNT(*) as count, "decisions" as type FROM decision_logs', 
+    'SELECT COUNT(*) as count, "risk" as type FROM risk_logs',
+    'SELECT COUNT(*) as count, "system" as type FROM system_logs',
+    'SELECT COUNT(*) as successful_trades FROM trade_logs WHERE status = "FILLED"',
+    'SELECT AVG(processing_time) as avg_processing_time FROM decision_logs WHERE processing_time IS NOT NULL',
+    'SELECT COUNT(*) as approved_risks FROM risk_logs WHERE approved = 1'
+  ];
+  
+  const results = await Promise.all(queries.map(query => 
+    new Promise((resolve, reject) => {
+      db.get(query, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    })
+  ));
+  
+  return {
+    totalTrades: results[0].count,
+    totalDecisions: results[1].count,
+    totalRiskChecks: results[2].count,
+    totalSystemLogs: results[3].count,
+    successfulTrades: results[4].successful_trades,
+    avgProcessingTime: results[5].avg_processing_time,
+    approvedRisks: results[6].approved_risks,
+    mode: isDryRun ? 'DRY_RUN' : 'LIVE',
+    uptime: process.uptime(),
+    databaseVersion: await getCurrentDatabaseVersion()
+  };
+}
+
+// الحصول على إصدار قاعدة البيانات
+async function getCurrentDatabaseVersion() {
+  return new Promise((resolve, reject) => {
+    db.get('PRAGMA user_version', (err, row) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(row.user_version || 0);
+      }
+    });
+  });
+}
+
+// تسجيل حدث نظام
+async function logSystemEvent(logData) {
+  return new Promise((resolve, reject) => {
+    const query = `INSERT INTO system_logs (
+      id, level, type, message, source, timestamp, metadata
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    
+    const values = [
+      logData.id,
+      logData.level,
+      logData.type,
+      logData.message,
+      logData.source,
+      logData.timestamp,
+      logData.metadata
+    ];
+    
+    db.run(query, values, function(err) {
+      if (err) {
+        console.error('Error logging system event:', err);
+        reject(err);
+      } else {
+        resolve(this.lastID);
+      }
+    });
+  });
+}
+
+async function getSystemStats() {
+  return getDetailedLogStats();
+}
       res.json({
         success: true,
         data: rows,

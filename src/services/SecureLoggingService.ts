@@ -173,8 +173,14 @@ class SecureLoggingService {
    * الحصول على السجلات من الخادم
    */
   async getLogsFromServer(type: 'trades' | 'decisions' | 'risk', options?: {
+  async getLogsFromServer(type: 'trades' | 'decisions' | 'risk' | 'system', options?: {
     limit?: number;
     symbol?: string;
+    strategy?: string;
+    level?: string;
+    source?: string;
+    startDate?: string;
+    endDate?: string;
     strategy?: string;
   }): Promise<any[]> {
     try {
@@ -182,6 +188,10 @@ class SecureLoggingService {
       if (options?.limit) params.append('limit', options.limit.toString());
       if (options?.symbol) params.append('symbol', options.symbol);
       if (options?.strategy) params.append('strategy', options.strategy);
+      if (options?.level) params.append('level', options.level);
+      if (options?.source) params.append('source', options.source);
+      if (options?.startDate) params.append('startDate', options.startDate);
+      if (options?.endDate) params.append('endDate', options.endDate);
 
       const url = `${this.backendUrl}/logs/${type}${params.toString() ? `?${params.toString()}` : ''}`;
       
