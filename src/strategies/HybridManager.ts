@@ -75,7 +75,8 @@ export class HybridTradingManager {
   public analyze(
     candles: CandleData[], 
     orderBook?: { bid: number; ask: number; bidSize: number; askSize: number },
-    symbol: string = 'BTCUSDT'
+    symbol: string = 'BTCUSDT',
+    forceStrategyId?: string
   ): HybridSignal {
     const analysisStart = performance.now();
     
@@ -101,15 +102,20 @@ export class HybridTradingManager {
     // تحليل حالة السوق
     const marketCondition = this.analyzeMarketCondition(candles);
     
-    // تحديد الاستراتيجية المناسبة
-    const optimalStrategy = this.selectOptimalStrategy(marketCondition);
+    // تحديد الاستراتيجية المناسبة أو استخدام المفروضة
+    const optimalStrategy = forceStrategyId || this.selectOptimalStrategy(marketCondition);
     
     // تطبيق hysteresis لتجنب التبديل المتكرر
-    const now = Date.now();
-    if (optimalStrategy !== this.currentStrategy && 
-        now - this.lastStrategyChange > this.hysteresisDelay) {
-      this.currentStrategy = optimalStrategy;
-      this.lastStrategyChange = now;
+    if (!forceStrategyId) {
+      const now = Date.now();
+      if (optimalStrategy !== this.currentStrategy && 
+          now - this.lastStrategyChange > this.hysteresisDelay) {
+        this.currentStrategy = optimalStrategy;
+        this.lastStrategyChange = now;
+      }
+    } else {
+      // استخدام الاستراتيجية المفروضة مباشرة
+      this.currentStrategy = forceStrategyId;
     }
 
     // تنفيذ الاستراتيجية المختارة
@@ -178,7 +184,7 @@ export class HybridTradingManager {
       takeProfit: adjustedSignal.takeProfit || 0,
       quantity: adjustedSignal.quantity || 0,
       reasons: [
-        `استراتيجية: ${this.getStrategyName(this.currentStrategy)}`,
+        `استراتيجية: ${this.getStrategyName(this.currentStrategy)}${forceStrategyId ? ' (مفروضة)' : ''}`,
         `حالة السوق: ${marketCondition.regime}`,
         ...adjustedSignal.reasons
       ],
@@ -426,6 +432,74 @@ export class HybridTradingManager {
 
   public getCurrentStrategy(): string {
     return this.currentStrategy;
+  }
+
+  /**
+   * الحصول على قائمة الاستراتيجيات المتاحة
+   */
+  public getAvailableStrategies(): Array<{
+    id: string;
+    name: string;
+    description: string;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    expectedWinRate: number;
+  }> {
+    return [
+      {
+        id: 'HYBRID',
+        name: 'النظام الهجين',
+        description: 'يختار الاستراتيجية المناسبة تلقائياً حسب حالة السوق',
+        riskLevel: 'MEDIUM',
+        expectedWinRate: 70
+      },
+      {
+        id: 'TREND_FOLLOWING',
+        name: 'تتبع الاتجاه',
+        description: 'يتبع الاتجاهات القوية باستخدام EMA و MACD',
+        riskLevel: 'MEDIUM',
+        expectedWinRate: 65
+      },
+      {
+        id: 'MEAN_REVERSION',
+        name: 'العودة للمتوسط',
+        description: 'يستغل التشبع الشرائي والبيعي',
+        riskLevel: 'LOW',
+        expectedWinRate: 72
+      },
+      {
+        id: 'GRID_DCA',
+        name: 'الشبكة + DCA',
+        description: 'شبكة تداول مع متوسط التكلفة',
+        riskLevel: 'HIGH',
+        expectedWinRate: 45
+      },
+      {
+        id: 'SCALPING',
+        name: 'السكالبينج',
+        description: 'صفقات سريعة بأرباح صغيرة',
+        riskLevel: 'MEDIUM',
+        expectedWinRate: 58
+      },
+      {
+        id: 'MARKET_MAKING',
+        name: 'صناعة السوق',
+        description: 'توفير السيولة والربح من السبريد',
+        riskLevel: 'LOW',
+        expectedWinRate: 85
+      }
+    ];
+  }
+
+  /**
+   * تحليل استراتيجية محددة بدون تغيير الحالة
+   */
+  public analyzeWithStrategy(
+    candles: CandleData[],
+    strategyId: string,
+    orderBook?: { bid: number; ask: number; bidSize: number; askSize: number },
+    symbol: string = 'BTCUSDT'
+  ): HybridSignal {
+    return this.analyze(candles, orderBook, symbol, strategyId);
   }
 
   public getStrategyPerformance(): Record<string, any> {
