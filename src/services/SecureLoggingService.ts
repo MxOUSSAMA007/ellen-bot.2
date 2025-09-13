@@ -173,6 +173,8 @@ class SecureLoggingService {
    * الحصول على السجلات من الخادم
    */
   async getLogsFromServer(type: 'trades' | 'decisions' | 'risk', options?: {
+  }
+  )
   async getLogsFromServer(type: 'trades' | 'decisions' | 'risk' | 'system', options?: {
     limit?: number;
     symbol?: string;
