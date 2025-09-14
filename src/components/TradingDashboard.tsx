@@ -30,7 +30,7 @@ export const TradingDashboard: React.FC<TradingDashboardProps> = () => {
       const result = await backendService.placeOrder(orderRequest);
       
       if (result.success) {
-        setOrderResult(`✅ تم تنفيذ أمر ${action} بنجاح`);
+        setOrderResult(`✅ تم تنفيذ أمر ${action} بنجاح - ${quantity} ${symbol.replace('USDT', '')}`);
         // تحديث الرصيد والـ PnL هنا إذا لزم الأمر
       } else {
         setOrderResult(`❌ فشل في تنفيذ الأمر: ${result.error}`);

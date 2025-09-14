@@ -20,13 +20,23 @@ import { backendService } from '../services/BackendService';
 
 export const StrategyManager: React.FC = () => {
   const [hybridManager] = useState(() => new HybridTradingManager());
-  const [isRunning, setIsRunning] = useState(false);
+  const [selectedStrategyId, setSelectedStrategyId] = useState('HYBRID');
+  const [tradingMode, setTradingMode] = useState<'AUTO' | 'MANUAL' | 'NONE'>('NONE');
   const [currentSignal, setCurrentSignal] = useState<HybridSignal | null>(null);
   const [marketCondition, setMarketCondition] = useState<MarketCondition | null>(null);
   const [backtestResults, setBacktestResults] = useState<any>(null);
   const [riskManagement, setRiskManagement] = useState(hybridManager.getRiskManagement());
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
+  const [orderResult, setOrderResult] = useState<string>('');
 
   const strategies = [
+    { 
+      id: 'HYBRID', 
+      name: 'النظام الهجين', 
+      icon: Brain, 
+      color: 'purple',
+      description: 'يختار الاستراتيجية المناسبة تلقائياً حسب حالة السوق'
+    },
     { 
       id: 'TREND_FOLLOWING', 
       name: 'تتبع الاتجاه', 
@@ -385,7 +395,7 @@ export const StrategyManager: React.FC = () => {
       />
 
       {/* Live Signals Log */}
-      {isRunning && currentSignal && (
+      {tradingMode === 'AUTO' && currentSignal && (
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 border border-slate-700/50">
           <h3 className="text-lg font-semibold mb-4">سجل الإشارات المباشر</h3>
           

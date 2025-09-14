@@ -174,6 +174,15 @@ export class BackendService {
       // محاكاة تأخير الشبكة
       await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 200));
       
+      // محاكاة رسوم وانزلاق واقعية
+      const basePrice = orderRequest.price || (Math.random() * 50000 + 30000);
+      const slippage = 0.0005; // 0.05% انزلاق
+      const fees = orderRequest.quantity * basePrice * 0.001; // 0.1% رسوم
+      
+      const executedPrice = orderRequest.side === 'BUY' 
+        ? basePrice * (1 + slippage)
+        : basePrice * (1 - slippage);
+      
       // محاكاة نجاح الأمر
       const mockResult = {
         success: true,
@@ -183,11 +192,15 @@ export class BackendService {
           side: orderRequest.side,
           type: orderRequest.type,
           quantity: orderRequest.quantity,
-          price: orderRequest.price,
+          price: orderRequest.price || basePrice,
           status: 'FILLED',
           executedQty: orderRequest.quantity,
-          executedPrice: orderRequest.price || (Math.random() * 50000 + 30000),
-          timestamp: Date.now()
+          executedPrice,
+          timestamp: Date.now(),
+          fees,
+          slippage: Math.abs(executedPrice - basePrice),
+          commission: fees,
+          commissionAsset: 'USDT'
         },
         timestamp: new Date().toISOString()
       };
